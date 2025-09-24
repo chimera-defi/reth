@@ -1,6 +1,6 @@
 //! Snap sync stage implementation.
 
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, keccak256::Keccak256};
 use futures_util::StreamExt;
 use reth_config::config::{EtlConfig, SnapSyncConfig};
 use reth_db_api::{
@@ -110,9 +110,14 @@ where
                                 processed_count += 1;
                             }
                             
-                            // Store proof data
-                            for proof in msg.proof {
-                                self.trie_node_collector.insert(B256::random(), proof)?;
+                            // Store proof data with deterministic keys
+                            for (i, proof) in msg.proof.into_iter().enumerate() {
+                                // Use a deterministic hash based on the proof content and index
+                                let mut hasher = Keccak256::new();
+                                hasher.update(&proof);
+                                hasher.update(&i.to_le_bytes());
+                                let proof_hash = hasher.finalize();
+                                self.trie_node_collector.insert(proof_hash, proof)?;
                             }
                         }
                         reth_network_downloaders::snap::downloader::SnapSyncResult::StorageRanges(msg) => {
@@ -124,24 +129,37 @@ where
                                 }
                             }
                             
-                            // Store proof data
-                            for proof in msg.proof {
-                                self.trie_node_collector.insert(B256::random(), proof)?;
+                            // Store proof data with deterministic keys
+                            for (i, proof) in msg.proof.into_iter().enumerate() {
+                                // Use a deterministic hash based on the proof content and index
+                                let mut hasher = Keccak256::new();
+                                hasher.update(&proof);
+                                hasher.update(&i.to_le_bytes());
+                                let proof_hash = hasher.finalize();
+                                self.trie_node_collector.insert(proof_hash, proof)?;
                             }
                         }
                         reth_network_downloaders::snap::downloader::SnapSyncResult::ByteCodes(msg) => {
                             // Process byte code data
                             for (i, code) in msg.codes.into_iter().enumerate() {
-                                let hash = B256::from_slice(&[i as u8; 32]); // Simplified hash
-                                self.byte_code_collector.insert(hash, code)?;
+                                // Use a deterministic hash based on the code content and index
+                                let mut hasher = Keccak256::new();
+                                hasher.update(&code);
+                                hasher.update(&i.to_le_bytes());
+                                let code_hash = hasher.finalize();
+                                self.byte_code_collector.insert(code_hash, code)?;
                                 processed_count += 1;
                             }
                         }
                         reth_network_downloaders::snap::downloader::SnapSyncResult::TrieNodes(msg) => {
                             // Process trie node data
                             for (i, node) in msg.nodes.into_iter().enumerate() {
-                                let hash = B256::from_slice(&[i as u8; 32]); // Simplified hash
-                                self.trie_node_collector.insert(hash, node)?;
+                                // Use a deterministic hash based on the node content and index
+                                let mut hasher = Keccak256::new();
+                                hasher.update(&node);
+                                hasher.update(&i.to_le_bytes());
+                                let node_hash = hasher.finalize();
+                                self.trie_node_collector.insert(node_hash, node)?;
                                 processed_count += 1;
                             }
                         }
@@ -160,79 +178,79 @@ where
     /// Write snap sync data to storage
     fn write_snap_data<P>(&mut self, provider: &P) -> Result<usize, StageError>
     where
-        P: DBProvider<Tx: DbTxMut> + StaticFileProviderFactory,
+        P: DBProvider<Tx: DbTxMut>,
     {
         let mut total_written = 0;
         
-        // Write account data
+        // Write account data to database
         let account_count = self.account_collector.len();
         if account_count > 0 {
             info!(target: "sync::stages::snap_sync", count = account_count, "Writing account data");
             
-            let mut static_file_writer = provider
-                .static_file_provider()
-                .get_writer(StaticFileSegment::Headers, 0)?;
+            let tx = provider.tx_mut()?;
+            let mut cursor = tx.cursor_write::<tables::AccountChangeSet>()?;
             
             for (hash, data) in self.account_collector.iter() {
-                static_file_writer.append_block(hash, data)?;
+                // Store account data in AccountChangeSet table
+                cursor.append(hash, data.clone())?;
                 total_written += 1;
             }
             
-            static_file_writer.commit()?;
+            tx.commit()?;
             self.account_collector.clear();
         }
         
-        // Write storage data
+        // Write storage data to database
         let storage_count = self.storage_collector.len();
         if storage_count > 0 {
             info!(target: "sync::stages::snap_sync", count = storage_count, "Writing storage data");
             
-            let mut static_file_writer = provider
-                .static_file_provider()
-                .get_writer(StaticFileSegment::Headers, 1)?;
+            let tx = provider.tx_mut()?;
+            let mut cursor = tx.cursor_write::<tables::StorageChangeSet>()?;
             
             for (hash, data) in self.storage_collector.iter() {
-                static_file_writer.append_block(hash, data)?;
+                // Store storage data in StorageChangeSet table
+                cursor.append(hash, data.clone())?;
                 total_written += 1;
             }
             
-            static_file_writer.commit()?;
+            tx.commit()?;
             self.storage_collector.clear();
         }
         
-        // Write byte code data
+        // Write byte code data to database
         let byte_code_count = self.byte_code_collector.len();
         if byte_code_count > 0 {
             info!(target: "sync::stages::snap_sync", count = byte_code_count, "Writing byte code data");
             
-            let mut static_file_writer = provider
-                .static_file_provider()
-                .get_writer(StaticFileSegment::Headers, 2)?;
+            let tx = provider.tx_mut()?;
+            let mut cursor = tx.cursor_write::<tables::Bytecodes>()?;
             
             for (hash, data) in self.byte_code_collector.iter() {
-                static_file_writer.append_block(hash, data)?;
+                // Store byte code data in Bytecodes table
+                cursor.append(hash, data.clone())?;
                 total_written += 1;
             }
             
-            static_file_writer.commit()?;
+            tx.commit()?;
             self.byte_code_collector.clear();
         }
         
-        // Write trie node data
+        // Write trie node data to database
         let trie_node_count = self.trie_node_collector.len();
         if trie_node_count > 0 {
             info!(target: "sync::stages::snap_sync", count = trie_node_count, "Writing trie node data");
             
-            let mut static_file_writer = provider
-                .static_file_provider()
-                .get_writer(StaticFileSegment::Headers, 3)?;
+            let tx = provider.tx_mut()?;
+            let mut cursor = tx.cursor_write::<tables::TrieNodes>()?;
             
             for (hash, data) in self.trie_node_collector.iter() {
-                static_file_writer.append_block(hash, data)?;
+                // Store trie node data in TrieNodes table
+                cursor.append(hash, data.clone())?;
                 total_written += 1;
             }
             
-            static_file_writer.commit()?;
+            tx.commit()?;
             self.trie_node_collector.clear();
         }
         

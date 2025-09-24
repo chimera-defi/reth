@@ -183,12 +183,24 @@ impl<C: SnapClient, Provider: HeaderProvider> Stream for SnapSyncDownloader<C, P
             return Poll::Ready(Some(Ok(result.result)));
         }
 
-        // If we have pending requests, process them
+        // If we have pending requests, we need to process them
+        // For now, we'll simulate processing by returning a placeholder result
+        // In a real implementation, this would involve async network requests
         if self.request_queue.has_pending_requests() {
-            // In a real implementation, this would be async
-            // For now, we'll return pending to indicate more work is needed
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
+            // Simulate processing a request and returning a result
+            // This prevents the busy-wait loop
+            if let Some(_request) = self.request_queue.pop_account_range() {
+                // In a real implementation, we would make the network request here
+                // For now, we return a placeholder result to prevent infinite polling
+                let placeholder_result = SnapSyncResult::AccountRange(
+                    reth_eth_wire_types::snap::AccountRangeMessage {
+                        request_id: 1,
+                        accounts: vec![],
+                        proof: vec![],
+                    }
+                );
+                return Poll::Ready(Some(Ok(placeholder_result)));
+            }
         }
 
         // No more work to do
@@ -199,7 +211,7 @@ impl<C: SnapClient, Provider: HeaderProvider> Stream for SnapSyncDownloader<C, P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_network_p2p::test_utils::TestSnapClient;
+    use crate::snap::test_utils::TestSnapClient;
 
     #[test]
     fn test_snap_sync_config_default() {
