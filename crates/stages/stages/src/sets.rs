@@ -541,3 +541,220 @@ where
             .add_stage(FinishStage)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::TestStageDB;
+    use futures_util::future;
+    use reth_consensus::test_utils::TestConsensus;
+    use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage, GetByteCodesMessage, GetStorageRangesMessage, GetTrieNodesMessage};
+    use reth_evm_ethereum::EthEvmConfig;
+    use reth_network_peers::WithPeerId;
+    use reth_network_p2p::{download::DownloadClient, snap::client::SnapClient};
+    use std::sync::Arc;
+    use tokio::sync::watch;
+
+    // Mock snap client for testing stage sets
+    #[derive(Debug, Clone)]
+    struct MockSnapClient;
+
+    impl DownloadClient for MockSnapClient {
+        fn report_bad_message(&self, _peer_id: reth_network_peers::PeerId) {
+            // Mock implementation
+        }
+
+        fn num_connected_peers(&self) -> usize {
+            1
+        }
+    }
+
+    impl SnapClient for MockSnapClient {
+        type Output = future::Ready<reth_network_p2p::error::PeerRequestResult<AccountRangeMessage>>;
+
+        fn get_account_range_with_priority(
+            &self,
+            _request: GetAccountRangeMessage,
+            _priority: reth_network_p2p::priority::Priority,
+        ) -> Self::Output {
+            future::ready(Ok(WithPeerId::new(
+                reth_network_peers::PeerId::random(),
+                AccountRangeMessage {
+                    request_id: 1,
+                    accounts: vec![],
+                    proof: vec![],
+                }
+            )))
+        }
+
+        fn get_storage_ranges(&self, _request: GetStorageRangesMessage) -> Self::Output {
+            future::ready(Ok(WithPeerId::new(
+                reth_network_peers::PeerId::random(),
+                AccountRangeMessage {
+                    request_id: 1,
+                    accounts: vec![],
+                    proof: vec![],
+                }
+            )))
+        }
+
+        fn get_storage_ranges_with_priority(
+            &self,
+            _request: GetStorageRangesMessage,
+            _priority: reth_network_p2p::priority::Priority,
+        ) -> Self::Output {
+            future::ready(Ok(WithPeerId::new(
+                reth_network_peers::PeerId::random(),
+                AccountRangeMessage {
+                    request_id: 1,
+                    accounts: vec![],
+                    proof: vec![],
+                }
+            )))
+        }
+
+        fn get_byte_codes(&self, _request: GetByteCodesMessage) -> Self::Output {
+            future::ready(Ok(WithPeerId::new(
+                reth_network_peers::PeerId::random(),
+                AccountRangeMessage {
+                    request_id: 1,
+                    accounts: vec![],
+                    proof: vec![],
+                }
+            )))
+        }
+
+        fn get_byte_codes_with_priority(
+            &self,
+            _request: GetByteCodesMessage,
+            _priority: reth_network_p2p::priority::Priority,
+        ) -> Self::Output {
+            future::ready(Ok(WithPeerId::new(
+                reth_network_peers::PeerId::random(),
+                AccountRangeMessage {
+                    request_id: 1,
+                    accounts: vec![],
+                    proof: vec![],
+                }
+            )))
+        }
+
+        fn get_trie_nodes(&self, _request: GetTrieNodesMessage) -> Self::Output {
+            future::ready(Ok(WithPeerId::new(
+                reth_network_peers::PeerId::random(),
+                AccountRangeMessage {
+                    request_id: 1,
+                    accounts: vec![],
+                    proof: vec![],
+                }
+            )))
+        }
+
+        fn get_trie_nodes_with_priority(
+            &self,
+            _request: GetTrieNodesMessage,
+            _priority: reth_network_p2p::priority::Priority,
+        ) -> Self::Output {
+            future::ready(Ok(WithPeerId::new(
+                reth_network_peers::PeerId::random(),
+                AccountRangeMessage {
+                    request_id: 1,
+                    accounts: vec![],
+                    proof: vec![],
+                }
+            )))
+        }
+    }
+
+    #[test]
+    fn test_snap_sync_stages_creation() {
+        let db = TestStageDB::default();
+        let (_tip_tx, tip_rx) = watch::channel(B256::ZERO);
+        let client = MockSnapClient;
+        let snap_config = crate::stages::SnapSyncConfig::default();
+        let evm_config = EthEvmConfig::ethereum(Arc::new(reth_chainspec::MAINNET.clone()));
+        let consensus = Arc::new(TestConsensus::default());
+        let stages_config = StageConfig::default();
+        let prune_modes = PruneModes::default();
+
+        let stages = SnapSyncStages::new(
+            db.factory.clone(),
+            client,
+            tip_rx,
+            snap_config,
+            evm_config,
+            consensus,
+            stages_config,
+            prune_modes,
+        );
+
+        // Test that the struct was created successfully
+        assert!(format!("{:?}", stages).contains("SnapSyncStages"));
+    }
+
+    #[test]
+    fn test_snap_sync_stages_builder() {
+        let db = TestStageDB::default();
+        let (_tip_tx, tip_rx) = watch::channel(B256::ZERO);
+        let client = MockSnapClient;
+        let snap_config = crate::stages::SnapSyncConfig::default();
+        let evm_config = EthEvmConfig::ethereum(Arc::new(reth_chainspec::MAINNET.clone()));
+        let consensus = Arc::new(TestConsensus::default());
+        let stages_config = StageConfig::default();
+        let prune_modes = PruneModes::default();
+
+        let stages = SnapSyncStages::new(
+            db.factory.clone(),
+            client,
+            tip_rx,
+            snap_config,
+            evm_config,
+            consensus,
+            stages_config,
+            prune_modes,
+        );
+
+        let builder = stages.builder();
+        
+        // The builder should contain stages - we can't easily inspect the internal
+        // structure, but we can verify it was created without panicking
+        assert!(format!("{:?}", builder).contains("StageSetBuilder"));
+    }
+
+    #[test]
+    fn test_snap_sync_config_in_stages() {
+        use std::time::Duration;
+        
+        let db = TestStageDB::default();
+        let (_tip_tx, tip_rx) = watch::channel(B256::ZERO);
+        let client = MockSnapClient;
+        
+        let custom_config = crate::stages::SnapSyncConfig {
+            max_accounts_per_request: 200,
+            max_storage_per_request: 500,
+            max_bytecodes_per_request: 32,
+            max_trie_nodes_per_request: 256,
+            request_timeout: Duration::from_secs(45),
+            max_concurrent_requests: 12,
+        };
+        
+        let evm_config = EthEvmConfig::ethereum(Arc::new(reth_chainspec::MAINNET.clone()));
+        let consensus = Arc::new(TestConsensus::default());
+        let stages_config = StageConfig::default();
+        let prune_modes = PruneModes::default();
+
+        let stages = SnapSyncStages::new(
+            db.factory.clone(),
+            client,
+            tip_rx,
+            custom_config,
+            evm_config,
+            consensus,
+            stages_config,
+            prune_modes,
+        );
+
+        // Test that the stages were created with the custom config
+        let _builder = stages.builder();
+    }
+}

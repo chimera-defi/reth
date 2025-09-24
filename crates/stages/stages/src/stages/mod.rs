@@ -21,6 +21,12 @@ mod prune;
 mod sender_recovery;
 /// The snap sync stage.
 mod snap_sync;
+/// Integration tests for snap sync.
+#[cfg(test)]
+mod snap_sync_integration_tests;
+/// Benchmark tests for snap sync.
+#[cfg(test)]
+mod snap_sync_bench_tests;
 /// The transaction lookup stage
 mod tx_lookup;
 

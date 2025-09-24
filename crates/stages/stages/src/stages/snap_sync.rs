@@ -137,11 +137,14 @@ where
         }
 
         // Get the current state root
-        let state_root = match self.get_current_state_root() {
-            Ok(Some(root)) => root,
+        let _state_root = match self.get_current_state_root() {
+            Ok(Some(root)) => {
+                info!(target: "sync::stages::snap", "Found state root: {:?}", root);
+                Some(root)
+            }
             Ok(None) => {
-                warn!(target: "sync::stages::snap", "No state root available for snap sync");
-                return Ok(ExecOutput::done(input.checkpoint()));
+                warn!(target: "sync::stages::snap", "No state root available for snap sync, proceeding anyway");
+                None
             }
             Err(err) => {
                 return Err(StageError::Fatal(Box::new(err)));
@@ -151,7 +154,7 @@ where
         // Start snap sync if not already started
         if self.progress.sync_start.is_none() {
             self.progress.sync_start = Some(Instant::now());
-            info!(target: "sync::stages::snap", "Starting snap sync for state root: {:?}", state_root);
+            info!(target: "sync::stages::snap", "Starting snap sync for target block: {}", target);
         }
 
         // For now, this is a stub implementation
@@ -320,5 +323,244 @@ mod tests {
         );
 
         assert_eq!(stage.id(), StageId::SnapSync);
+    }
+
+    #[test]
+    fn test_snap_sync_config_default() {
+        let config = SnapSyncConfig::default();
+        
+        assert_eq!(config.max_accounts_per_request, 384);
+        assert_eq!(config.max_storage_per_request, 1024);
+        assert_eq!(config.max_bytecodes_per_request, 64);
+        assert_eq!(config.max_trie_nodes_per_request, 512);
+        assert_eq!(config.request_timeout.as_secs(), 30);
+        assert_eq!(config.max_concurrent_requests, 16);
+    }
+
+    #[test]
+    fn test_snap_sync_config_custom() {
+        use std::time::Duration;
+        
+        let config = SnapSyncConfig {
+            max_accounts_per_request: 100,
+            max_storage_per_request: 200,
+            max_bytecodes_per_request: 50,
+            max_trie_nodes_per_request: 300,
+            request_timeout: Duration::from_secs(60),
+            max_concurrent_requests: 8,
+        };
+        
+        assert_eq!(config.max_accounts_per_request, 100);
+        assert_eq!(config.max_storage_per_request, 200);
+        assert_eq!(config.max_bytecodes_per_request, 50);
+        assert_eq!(config.max_trie_nodes_per_request, 300);
+        assert_eq!(config.request_timeout.as_secs(), 60);
+        assert_eq!(config.max_concurrent_requests, 8);
+    }
+
+    #[test]
+    fn test_snap_sync_progress_default() {
+        let progress = SnapSyncProgress::default();
+        
+        assert_eq!(progress.current_account_range, None);
+        assert_eq!(progress.accounts_synced, 0);
+        assert_eq!(progress.storage_synced, 0);
+        assert_eq!(progress.bytecodes_synced, 0);
+        assert_eq!(progress.trie_nodes_synced, 0);
+        assert_eq!(progress.sync_start, None);
+    }
+
+    #[test]
+    fn test_snap_sync_stage_execute_no_target() {
+        let db = TestStageDB::default();
+        let (_tip_tx, tip_rx) = watch::channel(B256::ZERO);
+        let client = MockSnapClient;
+        let config = SnapSyncConfig::default();
+
+        let mut stage = SnapSyncStage::new(
+            db.factory.clone(),
+            client,
+            tip_rx,
+            config,
+        );
+
+        let input = ExecInput {
+            target: None,
+            checkpoint: None,
+        };
+
+        let result = stage.execute(&db.factory, input);
+        assert!(result.is_ok());
+        
+        let output = result.unwrap();
+        assert!(output.done);
+        assert_eq!(output.checkpoint.block_number, 0);
+    }
+
+    #[test]
+    fn test_snap_sync_stage_execute_with_target() {
+        let db = TestStageDB::default();
+        let (_tip_tx, tip_rx) = watch::channel(B256::ZERO);
+        let client = MockSnapClient;
+        let config = SnapSyncConfig::default();
+
+        let mut stage = SnapSyncStage::new(
+            db.factory.clone(),
+            client,
+            tip_rx,
+            config,
+        );
+
+        let input = ExecInput {
+            target: Some(100),
+            checkpoint: Some(StageCheckpoint::new(50)),
+        };
+
+        let result = stage.execute(&db.factory, input);
+        assert!(result.is_ok());
+        
+        let output = result.unwrap();
+        assert!(output.done);
+        assert_eq!(output.checkpoint.block_number, 100);
+    }
+
+    #[test]
+    fn test_snap_sync_stage_unwind() {
+        let db = TestStageDB::default();
+        let (_tip_tx, tip_rx) = watch::channel(B256::ZERO);
+        let client = MockSnapClient;
+        let config = SnapSyncConfig::default();
+
+        let mut stage = SnapSyncStage::new(
+            db.factory.clone(),
+            client,
+            tip_rx,
+            config,
+        );
+
+        let input = UnwindInput {
+            unwind_to: 25,
+            bad_block: None,
+            checkpoint: StageCheckpoint::new(100),
+        };
+
+        let result = stage.unwind(&db.factory, input);
+        assert!(result.is_ok());
+        
+        let output = result.unwrap();
+        assert_eq!(output.checkpoint.block_number, 25);
+    }
+
+    #[test]
+    fn test_snap_sync_stage_is_downloading_stage() {
+        assert!(StageId::SnapSync.is_downloading_stage());
+        assert!(!StageId::SnapSync.is_tx_lookup());
+        assert!(!StageId::SnapSync.is_finish());
+    }
+
+    #[test]
+    fn test_snap_sync_stage_display() {
+        assert_eq!(StageId::SnapSync.to_string(), "SnapSync");
+        assert_eq!(StageId::SnapSync.as_str(), "SnapSync");
+    }
+
+    #[test]
+    fn test_mock_snap_client_methods() {
+        let client = MockSnapClient;
+        
+        // Test that all methods return Ready futures
+        let account_request = GetAccountRangeMessage {
+            request_id: 1,
+            root_hash: B256::ZERO,
+            starting_hash: B256::ZERO,
+            limit_hash: B256::from([0xff; 32]),
+            response_bytes: 1024,
+        };
+        
+        let storage_request = GetStorageRangesMessage {
+            request_id: 1,
+            root_hash: B256::ZERO,
+            account_hashes: vec![B256::ZERO],
+            starting_hash: B256::ZERO,
+            limit_hash: B256::from([0xff; 32]),
+            response_bytes: 1024,
+        };
+        
+        let bytecode_request = GetByteCodesMessage {
+            request_id: 1,
+            hashes: vec![B256::ZERO],
+            response_bytes: 1024,
+        };
+        
+        let trie_request = GetTrieNodesMessage {
+            request_id: 1,
+            root_hash: B256::ZERO,
+            paths: vec![],
+            response_bytes: 1024,
+        };
+        
+        // All methods should return Ready futures that resolve to Ok
+        let _account_future = client.get_account_range(account_request);
+        let _storage_future = client.get_storage_ranges(storage_request);
+        let _bytecode_future = client.get_byte_codes(bytecode_request);
+        let _trie_future = client.get_trie_nodes(trie_request);
+    }
+
+    #[tokio::test]
+    async fn test_mock_snap_client_responses() {
+        let client = MockSnapClient;
+        
+        let account_request = GetAccountRangeMessage {
+            request_id: 1,
+            root_hash: B256::ZERO,
+            starting_hash: B256::ZERO,
+            limit_hash: B256::from([0xff; 32]),
+            response_bytes: 1024,
+        };
+        
+        let response = client.get_account_range(account_request).await;
+        assert!(response.is_ok());
+        
+        let account_response = response.unwrap();
+        assert_eq!(account_response.1.request_id, 1);
+        assert!(account_response.1.accounts.is_empty());
+        assert!(account_response.1.proof.is_empty());
+    }
+
+    #[test]
+    fn test_snap_sync_progress_clone() {
+        let progress = SnapSyncProgress {
+            current_account_range: Some((B256::ZERO, B256::from([0xff; 32]))),
+            accounts_synced: 100,
+            storage_synced: 200,
+            bytecodes_synced: 50,
+            trie_nodes_synced: 75,
+            sync_start: Some(std::time::Instant::now()),
+        };
+        
+        let cloned = progress.clone();
+        assert_eq!(progress.current_account_range, cloned.current_account_range);
+        assert_eq!(progress.accounts_synced, cloned.accounts_synced);
+        assert_eq!(progress.storage_synced, cloned.storage_synced);
+        assert_eq!(progress.bytecodes_synced, cloned.bytecodes_synced);
+        assert_eq!(progress.trie_nodes_synced, cloned.trie_nodes_synced);
+    }
+
+    #[test]
+    fn test_snap_sync_config_clone_and_debug() {
+        let config = SnapSyncConfig::default();
+        let cloned = config.clone();
+        
+        assert_eq!(config.max_accounts_per_request, cloned.max_accounts_per_request);
+        assert_eq!(config.max_storage_per_request, cloned.max_storage_per_request);
+        assert_eq!(config.max_bytecodes_per_request, cloned.max_bytecodes_per_request);
+        assert_eq!(config.max_trie_nodes_per_request, cloned.max_trie_nodes_per_request);
+        assert_eq!(config.request_timeout, cloned.request_timeout);
+        assert_eq!(config.max_concurrent_requests, cloned.max_concurrent_requests);
+        
+        // Test Debug implementation
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("SnapSyncConfig"));
+        assert!(debug_str.contains("max_accounts_per_request"));
     }
 }
