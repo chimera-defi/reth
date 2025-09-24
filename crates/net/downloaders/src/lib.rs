@@ -18,6 +18,9 @@ pub mod bodies;
 /// The collection of algorithms for downloading block headers.
 pub mod headers;
 
+/// The collection of algorithms for snap sync downloading state data.
+pub mod snap;
+
 /// Common downloader metrics.
 pub mod metrics;
 

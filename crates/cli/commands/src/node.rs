@@ -101,6 +101,10 @@ pub struct NodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs
     #[command(flatten)]
     pub dev: DevArgs,
 
+    /// Enable snap sync for faster state synchronization
+    #[arg(long, help = "Enable snap sync for faster state synchronization")]
+    pub snap_sync: bool,
+
     /// All pruning related arguments
     #[command(flatten)]
     pub pruning: PruningArgs,

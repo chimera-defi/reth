@@ -19,6 +19,8 @@ mod merkle;
 mod prune;
 /// The sender recovery stage.
 mod sender_recovery;
+/// The snap sync stage for downloading state data.
+mod snap_sync;
 /// The transaction lookup stage
 mod tx_lookup;
 
@@ -34,6 +36,7 @@ pub use index_storage_history::*;
 pub use merkle::*;
 pub use prune::*;
 pub use sender_recovery::*;
+pub use snap_sync::*;
 pub use tx_lookup::*;
 
 mod era;
