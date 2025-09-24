@@ -27,6 +27,7 @@ reth-era.workspace = true
 reth-exex.workspace = true
 reth-fs-util.workspace = true
 reth-network-p2p.workspace = true
+reth-eth-wire-types.workspace = true
 reth-primitives-traits = { workspace = true, features = ["serde-bincode-compat"] }
 reth-provider.workspace = true
 reth-execution-types.workspace = true
@@ -62,6 +63,7 @@ tempfile = { workspace = true, optional = true }
 bincode.workspace = true
 reqwest = { workspace = true, default-features = false, features = ["rustls-tls-native-roots", "blocking"] }
 eyre.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 # reth

@@ -10289,6 +10289,7 @@ dependencies = [
  "reth-era",
  "reth-era-downloader",
  "reth-era-utils",
+ "reth-eth-wire-types",
  "reth-ethereum-consensus",
  "reth-ethereum-primitives",
  "reth-etl",

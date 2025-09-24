@@ -106,6 +106,26 @@ The `IndexAccountHistoryStage` builds indices for account history, tracking how 
 
 <br>
 
+## SnapSyncStage
+
+The `SnapSyncStage` is an experimental stage that implements snap sync functionality. Snap sync is an alternative synchronization method that downloads state data directly using the Ethereum snap protocol, rather than downloading and executing all historical transactions.
+
+Key features of snap sync:
+- Downloads account ranges, storage slots, and bytecodes directly from peers
+- Significantly faster initial synchronization compared to full sync
+- Reduces bandwidth and storage requirements during sync
+- Provides a way to quickly bootstrap a node with the current state
+
+**Note**: The current implementation is a stub/placeholder. A complete snap sync implementation would need to:
+- Implement proper state verification and validation
+- Handle network failures and retries gracefully  
+- Integrate with the state trie reconstruction
+- Ensure data integrity and consistency
+
+The snap sync stage can be used as an alternative to the traditional `HeaderStage` + `BodyStage` combination by using the `SnapSyncStages` stage set instead of `DefaultStages`.
+
+<br>
+
 ## FinishStage
 
 The `FinishStage` is the final stage in the pipeline that performs cleanup and verification tasks. It ensures that all previous stages have been completed successfully and that the node's state is consistent. This stage may also update various metrics and status indicators to reflect the completion of a sync cycle.

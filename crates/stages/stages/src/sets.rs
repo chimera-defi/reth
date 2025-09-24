@@ -40,7 +40,7 @@ use crate::{
     stages::{
         AccountHashingStage, BodyStage, EraImportSource, EraStage, ExecutionStage, FinishStage,
         HeaderStage, IndexAccountHistoryStage, IndexStorageHistoryStage, MerkleStage,
-        PruneSenderRecoveryStage, PruneStage, SenderRecoveryStage, StorageHashingStage,
+        PruneSenderRecoveryStage, PruneStage, SenderRecoveryStage, SnapSyncStage, StorageHashingStage,
         TransactionLookupStage,
     },
     StageSet, StageSetBuilder,
@@ -451,5 +451,93 @@ where
                 self.stages_config.etl.clone(),
                 self.prune_modes.account_history,
             ))
+    }
+}
+
+/// A basic stage set that uses snap sync instead of traditional header/body sync.
+///
+/// This stage set replaces the traditional [`HeaderStage`] and [`BodyStage`] with
+/// a [`SnapSyncStage`] that downloads state directly using the snap protocol.
+///
+/// The stages in this set are:
+/// - [`SnapSyncStage`] - Downloads state using snap protocol (stub implementation)
+/// - [`FinishStage`] - Final cleanup
+///
+/// Note: This is a minimal implementation for demonstration purposes. A complete
+/// snap sync pipeline would need additional stages for processing the synced state.
+#[derive(Debug)]
+pub struct SnapSyncStages<Provider, Client, E>
+where
+    Client: reth_network_p2p::snap::client::SnapClient,
+    E: ConfigureEvm,
+{
+    /// Database provider
+    provider: Provider,
+    /// Snap client for downloading state
+    snap_client: Client,
+    /// Chain tip receiver
+    tip: watch::Receiver<B256>,
+    /// Snap sync configuration
+    snap_config: crate::stages::SnapSyncConfig,
+    /// Executor factory needs for execution stage
+    evm_config: E,
+    /// Consensus instance
+    consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
+    /// Configuration for each stage in the pipeline
+    stages_config: StageConfig,
+    /// Prune configuration for every segment that can be pruned
+    prune_modes: PruneModes,
+}
+
+impl<Provider, Client, E> SnapSyncStages<Provider, Client, E>
+where
+    Client: reth_network_p2p::snap::client::SnapClient,
+    E: ConfigureEvm,
+{
+    /// Create a new set of snap sync stages.
+    #[expect(clippy::too_many_arguments)]
+    pub fn new(
+        provider: Provider,
+        snap_client: Client,
+        tip: watch::Receiver<B256>,
+        snap_config: crate::stages::SnapSyncConfig,
+        evm_config: E,
+        consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
+        stages_config: StageConfig,
+        prune_modes: PruneModes,
+    ) -> Self {
+        Self {
+            provider,
+            snap_client,
+            tip,
+            snap_config,
+            evm_config,
+            consensus,
+            stages_config,
+            prune_modes,
+        }
+    }
+}
+
+impl<Provider, Client, E> StageSet<Provider> for SnapSyncStages<Provider, Client, E>
+where
+    Provider: reth_provider::DatabaseProviderFactory + reth_provider::StaticFileProviderFactory + Clone + Unpin + 'static,
+    Client: reth_network_p2p::snap::client::SnapClient + Clone + Unpin + 'static,
+    E: ConfigureEvm + 'static,
+    SnapSyncStage<Provider, Client>: Stage<Provider>,
+{
+    fn builder(self) -> StageSetBuilder<Provider> {
+        let snap_stage = SnapSyncStage::new(
+            self.provider.clone(),
+            self.snap_client,
+            self.tip,
+            self.snap_config,
+        );
+
+        StageSetBuilder::default()
+            // Start with snap sync instead of header/body sync
+            .add_stage(snap_stage)
+            // Add finish stage
+            .add_stage(FinishStage)
     }
 }
