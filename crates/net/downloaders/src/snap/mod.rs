@@ -7,6 +7,7 @@
 pub mod downloader;
 pub mod task;
 pub mod queue;
+pub mod server;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -15,3 +16,4 @@ pub mod test_utils;
 mod tests;
 
 pub use downloader::SnapSyncDownloader;
+pub use server::{SnapSyncServer, SnapSyncServerTrait};

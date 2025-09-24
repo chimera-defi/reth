@@ -29,3 +29,6 @@ pub mod stage;
 pub mod test_vectors;
 
 pub use node::NodeCommand;
+
+#[cfg(test)]
+mod snap_sync_test;
