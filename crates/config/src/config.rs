@@ -107,6 +107,8 @@ pub struct StageConfig {
     pub headers: HeadersConfig,
     /// Body stage configuration.
     pub bodies: BodiesConfig,
+    /// Snap sync stage configuration.
+    pub snap_sync: SnapSyncConfig,
     /// Sender Recovery stage configuration.
     pub sender_recovery: SenderRecoveryConfig,
     /// Execution stage configuration.
@@ -239,6 +241,55 @@ impl Default for BodiesConfig {
             downloader_max_buffered_blocks_size_bytes: 2 * 1024 * 1024 * 1024, // ~2GB
             downloader_min_concurrent_requests: 5,
             downloader_max_concurrent_requests: 100,
+        }
+    }
+}
+
+/// Snap sync stage configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct SnapSyncConfig {
+    /// The maximum number of concurrent requests to send.
+    ///
+    /// Default: 10
+    pub max_concurrent_requests: usize,
+    /// The maximum response size in bytes.
+    ///
+    /// Default: 2MB
+    pub max_response_bytes: u64,
+    /// The maximum number of accounts per request.
+    ///
+    /// Default: 1000
+    pub max_accounts_per_request: u64,
+    /// The maximum number of storage slots per request.
+    ///
+    /// Default: 1000
+    pub max_storage_slots_per_request: u64,
+    /// The maximum number of byte codes per request.
+    ///
+    /// Default: 100
+    pub max_byte_codes_per_request: u64,
+    /// The maximum number of trie nodes per request.
+    ///
+    /// Default: 1000
+    pub max_trie_nodes_per_request: u64,
+    /// The maximum number of snap sync items to process before committing progress to the database.
+    ///
+    /// Default: 10_000
+    pub commit_threshold: u64,
+}
+
+impl Default for SnapSyncConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_requests: 10,
+            max_response_bytes: 2 * 1024 * 1024, // 2MB
+            max_accounts_per_request: 1000,
+            max_storage_slots_per_request: 1000,
+            max_byte_codes_per_request: 100,
+            max_trie_nodes_per_request: 1000,
+            commit_threshold: 10_000,
         }
     }
 }

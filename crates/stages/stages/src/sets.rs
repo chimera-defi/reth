@@ -40,7 +40,7 @@ use crate::{
     stages::{
         AccountHashingStage, BodyStage, EraImportSource, EraStage, ExecutionStage, FinishStage,
         HeaderStage, IndexAccountHistoryStage, IndexStorageHistoryStage, MerkleStage,
-        PruneSenderRecoveryStage, PruneStage, SenderRecoveryStage, StorageHashingStage,
+        PruneSenderRecoveryStage, PruneStage, SenderRecoveryStage, SnapSyncStage, StorageHashingStage,
         TransactionLookupStage,
     },
     StageSet, StageSetBuilder,
@@ -68,6 +68,7 @@ use tokio::sync::watch;
 /// This expands to the following series of stages:
 /// - [`HeaderStage`]
 /// - [`BodyStage`]
+/// - [`SnapSyncStage`]
 /// - [`SenderRecoveryStage`]
 /// - [`ExecutionStage`]
 /// - [`PruneSenderRecoveryStage`] (execute)
@@ -81,14 +82,15 @@ use tokio::sync::watch;
 /// - [`PruneStage`] (execute)
 /// - [`FinishStage`]
 #[derive(Debug)]
-pub struct DefaultStages<Provider, H, B, E>
+pub struct DefaultStages<Provider, H, B, S, E>
 where
     H: HeaderDownloader,
     B: BodyDownloader,
+    S: reth_network_p2p::snap::client::SnapClient,
     E: ConfigureEvm,
 {
     /// Configuration for the online stages
-    online: OnlineStages<Provider, H, B>,
+    online: OnlineStages<Provider, H, B, S>,
     /// Executor factory needs for execution stage
     evm_config: E,
     /// Consensus instance
@@ -99,10 +101,11 @@ where
     prune_modes: PruneModes,
 }
 
-impl<Provider, H, B, E> DefaultStages<Provider, H, B, E>
+impl<Provider, H, B, S, E> DefaultStages<Provider, H, B, S, E>
 where
     H: HeaderDownloader,
     B: BodyDownloader,
+    S: reth_network_p2p::snap::client::SnapClient,
     E: ConfigureEvm<Primitives: NodePrimitives<BlockHeader = H::Header, Block = B::Block>>,
 {
     /// Create a new set of default stages with default values.
@@ -113,6 +116,7 @@ where
         consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
         header_downloader: H,
         body_downloader: B,
+        snap_client: std::sync::Arc<S>,
         evm_config: E,
         stages_config: StageConfig,
         prune_modes: PruneModes,
@@ -124,6 +128,7 @@ where
                 tip,
                 header_downloader,
                 body_downloader,
+                snap_client,
                 stages_config.clone(),
                 era_import_source,
             ),
@@ -135,11 +140,12 @@ where
     }
 }
 
-impl<P, H, B, E> DefaultStages<P, H, B, E>
+impl<P, H, B, S, E> DefaultStages<P, H, B, S, E>
 where
     E: ConfigureEvm,
     H: HeaderDownloader,
     B: BodyDownloader,
+    S: reth_network_p2p::snap::client::SnapClient,
 {
     /// Appends the default offline stages and default finish stage to the given builder.
     pub fn add_offline_stages<Provider>(
@@ -159,13 +165,14 @@ where
     }
 }
 
-impl<P, H, B, E, Provider> StageSet<Provider> for DefaultStages<P, H, B, E>
+impl<P, H, B, S, E, Provider> StageSet<Provider> for DefaultStages<P, H, B, S, E>
 where
     P: HeaderSyncGapProvider + 'static,
     H: HeaderDownloader + 'static,
     B: BodyDownloader + 'static,
+    S: reth_network_p2p::snap::client::SnapClient + 'static,
     E: ConfigureEvm,
-    OnlineStages<P, H, B>: StageSet<Provider>,
+    OnlineStages<P, H, B, S>: StageSet<Provider>,
     OfflineStages<E>: StageSet<Provider>,
 {
     fn builder(self) -> StageSetBuilder<Provider> {
@@ -184,10 +191,11 @@ where
 /// These stages *can* be run without network access if the specified downloaders are
 /// themselves offline.
 #[derive(Debug)]
-pub struct OnlineStages<Provider, H, B>
+pub struct OnlineStages<Provider, H, B, S>
 where
     H: HeaderDownloader,
     B: BodyDownloader,
+    S: reth_network_p2p::snap::client::SnapClient,
 {
     /// Sync gap provider for the headers stage.
     provider: Provider,
@@ -198,46 +206,70 @@ where
     header_downloader: H,
     /// The block body downloader
     body_downloader: B,
+    /// The snap sync client
+    snap_client: std::sync::Arc<S>,
     /// Configuration for each stage in the pipeline
     stages_config: StageConfig,
     /// Optional source of ERA1 files. The `EraStage` does nothing unless this is specified.
     era_import_source: Option<EraImportSource>,
 }
 
-impl<Provider, H, B> OnlineStages<Provider, H, B>
+impl<Provider, H, B, S> OnlineStages<Provider, H, B, S>
 where
     H: HeaderDownloader,
     B: BodyDownloader,
+    S: reth_network_p2p::snap::client::SnapClient,
 {
     /// Create a new set of online stages with default values.
-    pub const fn new(
+    pub fn new(
         provider: Provider,
         tip: watch::Receiver<B256>,
         header_downloader: H,
         body_downloader: B,
+        snap_client: std::sync::Arc<S>,
         stages_config: StageConfig,
         era_import_source: Option<EraImportSource>,
     ) -> Self {
-        Self { provider, tip, header_downloader, body_downloader, stages_config, era_import_source }
+        Self { 
+            provider, 
+            tip, 
+            header_downloader, 
+            body_downloader, 
+            snap_client,
+            stages_config, 
+            era_import_source 
+        }
     }
 }
 
-impl<P, H, B> OnlineStages<P, H, B>
+impl<P, H, B, S> OnlineStages<P, H, B, S>
 where
     P: HeaderSyncGapProvider + 'static,
     H: HeaderDownloader<Header = <B::Block as Block>::Header> + 'static,
     B: BodyDownloader + 'static,
+    S: reth_network_p2p::snap::client::SnapClient + 'static,
 {
     /// Create a new builder using the given headers stage.
     pub fn builder_with_headers<Provider>(
         headers: HeaderStage<P, H>,
         body_downloader: B,
+        snap_client: std::sync::Arc<S>,
+        stages_config: StageConfig,
     ) -> StageSetBuilder<Provider>
     where
         HeaderStage<P, H>: Stage<Provider>,
         BodyStage<B>: Stage<Provider>,
+        SnapSyncStage<P, S>: Stage<Provider>,
     {
-        StageSetBuilder::default().add_stage(headers).add_stage(BodyStage::new(body_downloader))
+        StageSetBuilder::default()
+            .add_stage(headers)
+            .add_stage(BodyStage::new(body_downloader))
+            .add_stage(SnapSyncStage::new(
+                headers.provider().clone(),
+                snap_client,
+                stages_config.snap_sync,
+                stages_config.etl,
+            ))
     }
 
     /// Create a new builder using the given bodies stage.
@@ -246,25 +278,35 @@ where
         provider: P,
         tip: watch::Receiver<B256>,
         header_downloader: H,
+        snap_client: std::sync::Arc<S>,
         stages_config: StageConfig,
     ) -> StageSetBuilder<Provider>
     where
         BodyStage<B>: Stage<Provider>,
         HeaderStage<P, H>: Stage<Provider>,
+        SnapSyncStage<P, S>: Stage<Provider>,
     {
         StageSetBuilder::default()
-            .add_stage(HeaderStage::new(provider, header_downloader, tip, stages_config.etl))
+            .add_stage(HeaderStage::new(provider.clone(), header_downloader, tip, stages_config.etl.clone()))
             .add_stage(bodies)
+            .add_stage(SnapSyncStage::new(
+                provider,
+                snap_client,
+                stages_config.snap_sync,
+                stages_config.etl,
+            ))
     }
 }
 
-impl<Provider, P, H, B> StageSet<Provider> for OnlineStages<P, H, B>
+impl<Provider, P, H, B, S> StageSet<Provider> for OnlineStages<P, H, B, S>
 where
     P: HeaderSyncGapProvider + 'static,
     H: HeaderDownloader<Header = <B::Block as Block>::Header> + 'static,
     B: BodyDownloader + 'static,
+    S: reth_network_p2p::snap::client::SnapClient + 'static,
     HeaderStage<P, H>: Stage<Provider>,
     BodyStage<B>: Stage<Provider>,
+    SnapSyncStage<P, S>: Stage<Provider>,
     EraStage<<B::Block as Block>::Header, <B::Block as Block>::Body, EraImportSource>:
         Stage<Provider>,
 {
@@ -272,12 +314,18 @@ where
         StageSetBuilder::default()
             .add_stage(EraStage::new(self.era_import_source, self.stages_config.etl.clone()))
             .add_stage(HeaderStage::new(
-                self.provider,
+                self.provider.clone(),
                 self.header_downloader,
                 self.tip,
                 self.stages_config.etl.clone(),
             ))
             .add_stage(BodyStage::new(self.body_downloader))
+            .add_stage(SnapSyncStage::new(
+                self.provider,
+                self.snap_client,
+                self.stages_config.snap_sync,
+                self.stages_config.etl,
+            ))
     }
 }
 
