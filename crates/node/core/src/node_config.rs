@@ -3,7 +3,7 @@
 use crate::{
     args::{
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, NetworkArgs, PayloadBuilderArgs,
-        PruningArgs, RpcServerArgs, TxPoolArgs,
+        PruningArgs, RpcServerArgs, SyncArgs, TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -154,6 +154,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// All ERA import related arguments with --era prefix
     pub era: EraArgs,
+
+    /// All sync related arguments
+    pub sync: SyncArgs,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -184,6 +187,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             datadir: DatadirArgs::default(),
             engine: EngineArgs::default(),
             era: EraArgs::default(),
+            sync: SyncArgs::default(),
         }
     }
 

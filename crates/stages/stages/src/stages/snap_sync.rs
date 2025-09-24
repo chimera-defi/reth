@@ -349,6 +349,10 @@ mod tests {
 #[path = "snap_sync_tests.rs"]
 mod integration_tests;
 
+#[cfg(test)]
+#[path = "snap_sync_e2e_test.rs"]
+mod e2e_tests;
+
 // Re-export integration tests when testing
 #[cfg(test)]
 pub use integration_tests::*;

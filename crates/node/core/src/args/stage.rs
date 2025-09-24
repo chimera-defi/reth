@@ -14,6 +14,10 @@ pub enum StageEnum {
     ///
     /// This stage deals with block bodies and their associated data.
     Bodies,
+    /// The snap sync stage within the pipeline.
+    ///
+    /// This stage handles fast state synchronization using snap protocol.
+    SnapSync,
     /// The senders stage within the pipeline.
     ///
     /// Responsible for sender-related processes and data recovery.

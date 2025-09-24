@@ -68,5 +68,9 @@ pub use ress_args::RessArgs;
 mod era;
 pub use era::{DefaultEraHost, EraArgs, EraSourceArgs};
 
+/// SyncArgs for configuring sync behavior
+mod sync;
+pub use sync::{SyncArgs, SyncMode};
+
 mod error;
 pub mod types;

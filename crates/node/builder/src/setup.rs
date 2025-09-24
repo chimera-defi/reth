@@ -13,7 +13,7 @@ use reth_downloaders::{
 use reth_evm::ConfigureEvm;
 use reth_exex::ExExManagerHandle;
 use reth_network_p2p::{
-    bodies::downloader::BodyDownloader, headers::downloader::HeaderDownloader, BlockClient,
+    bodies::downloader::BodyDownloader, headers::downloader::HeaderDownloader, snap::client::SnapClient, BlockClient,
 };
 use reth_node_api::HeaderTy;
 use reth_provider::{providers::ProviderNodeTypes, ProviderFactory};
@@ -45,7 +45,7 @@ pub fn build_networked_pipeline<N, Client, Evm>(
 ) -> eyre::Result<Pipeline<N>>
 where
     N: ProviderNodeTypes,
-    Client: BlockClient<Block = BlockTy<N>> + 'static,
+    Client: BlockClient<Block = BlockTy<N>> + SnapClient + 'static,
     Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
 {
     // building network downloaders using the fetch client
@@ -62,6 +62,7 @@ where
         config,
         header_downloader,
         body_downloader,
+        client, // Pass the client as snap client
         consensus,
         max_block,
         metrics_tx,
@@ -77,11 +78,12 @@ where
 
 /// Builds the [Pipeline] with the given [`ProviderFactory`] and downloaders.
 #[expect(clippy::too_many_arguments)]
-pub fn build_pipeline<N, H, B, Evm>(
+pub fn build_pipeline<N, H, B, S, Evm>(
     provider_factory: ProviderFactory<N>,
     stage_config: &StageConfig,
     header_downloader: H,
     body_downloader: B,
+    snap_client: S,
     consensus: Arc<dyn FullConsensus<N::Primitives, Error = ConsensusError>>,
     max_block: Option<u64>,
     metrics_tx: reth_stages::MetricEventsSender,
@@ -95,6 +97,7 @@ where
     N: ProviderNodeTypes,
     H: HeaderDownloader<Header = HeaderTy<N>> + 'static,
     B: BodyDownloader<Block = BlockTy<N>> + 'static,
+    S: SnapClient + 'static,
     Evm: ConfigureEvm<Primitives = N::Primitives> + 'static,
 {
     let mut builder = Pipeline::<N>::builder();
@@ -118,6 +121,7 @@ where
                 Arc::clone(&consensus),
                 header_downloader,
                 body_downloader,
+                snap_client,
                 evm_config.clone(),
                 stage_config.clone(),
                 prune_modes,
