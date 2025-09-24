@@ -8,6 +8,10 @@ use crate::{message::BlockRequest, session::BlockRangeInfo};
 use alloy_primitives::B256;
 use futures::StreamExt;
 use reth_eth_wire::{EthNetworkPrimitives, GetBlockBodies, GetBlockHeaders, NetworkPrimitives};
+use reth_eth_wire_types::snap::{
+    AccountRangeMessage, ByteCodesMessage, GetAccountRangeMessage, GetByteCodesMessage,
+    GetStorageRangesMessage, GetTrieNodesMessage, StorageRangesMessage, TrieNodesMessage,
+};
 use reth_network_api::test_utils::PeersHandle;
 use reth_network_p2p::{
     error::{EthResponseValidator, PeerRequestResult, RequestError, RequestResult},
@@ -30,6 +34,10 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 type InflightHeadersRequest<H> = Request<HeadersRequest, PeerRequestResult<Vec<H>>>;
 type InflightBodiesRequest<B> = Request<Vec<B256>, PeerRequestResult<Vec<B>>>;
+type InflightAccountRangeRequest = Request<GetAccountRangeMessage, PeerRequestResult<AccountRangeMessage>>;
+type InflightStorageRangesRequest = Request<GetStorageRangesMessage, PeerRequestResult<StorageRangesMessage>>;
+type InflightByteCodesRequest = Request<GetByteCodesMessage, PeerRequestResult<ByteCodesMessage>>;
+type InflightTrieNodesRequest = Request<GetTrieNodesMessage, PeerRequestResult<TrieNodesMessage>>;
 
 /// Manages data fetching operations.
 ///
@@ -43,6 +51,14 @@ pub struct StateFetcher<N: NetworkPrimitives = EthNetworkPrimitives> {
     inflight_headers_requests: HashMap<PeerId, InflightHeadersRequest<N::BlockHeader>>,
     /// Currently active [`GetBlockBodies`] requests
     inflight_bodies_requests: HashMap<PeerId, InflightBodiesRequest<N::BlockBody>>,
+    /// Currently active [`GetAccountRange`] requests
+    inflight_account_range_requests: HashMap<PeerId, InflightAccountRangeRequest>,
+    /// Currently active [`GetStorageRanges`] requests
+    inflight_storage_ranges_requests: HashMap<PeerId, InflightStorageRangesRequest>,
+    /// Currently active [`GetByteCodes`] requests
+    inflight_byte_codes_requests: HashMap<PeerId, InflightByteCodesRequest>,
+    /// Currently active [`GetTrieNodes`] requests
+    inflight_trie_nodes_requests: HashMap<PeerId, InflightTrieNodesRequest>,
     /// The list of _available_ peers for requests.
     peers: HashMap<PeerId, Peer>,
     /// The handle to the peers manager
@@ -65,6 +81,10 @@ impl<N: NetworkPrimitives> StateFetcher<N> {
         Self {
             inflight_headers_requests: Default::default(),
             inflight_bodies_requests: Default::default(),
+            inflight_account_range_requests: Default::default(),
+            inflight_storage_ranges_requests: Default::default(),
+            inflight_byte_codes_requests: Default::default(),
+            inflight_trie_nodes_requests: Default::default(),
             peers: Default::default(),
             peers_handle,
             num_active_peers,
@@ -108,6 +128,18 @@ impl<N: NetworkPrimitives> StateFetcher<N> {
             let _ = req.response.send(Err(RequestError::ConnectionDropped));
         }
         if let Some(req) = self.inflight_bodies_requests.remove(peer) {
+            let _ = req.response.send(Err(RequestError::ConnectionDropped));
+        }
+        if let Some(req) = self.inflight_account_range_requests.remove(peer) {
+            let _ = req.response.send(Err(RequestError::ConnectionDropped));
+        }
+        if let Some(req) = self.inflight_storage_ranges_requests.remove(peer) {
+            let _ = req.response.send(Err(RequestError::ConnectionDropped));
+        }
+        if let Some(req) = self.inflight_byte_codes_requests.remove(peer) {
+            let _ = req.response.send(Err(RequestError::ConnectionDropped));
+        }
+        if let Some(req) = self.inflight_trie_nodes_requests.remove(peer) {
             let _ = req.response.send(Err(RequestError::ConnectionDropped));
         }
     }
@@ -370,6 +402,14 @@ enum PeerState {
     GetBlockHeaders,
     /// Peer is handling a `GetBlockBodies` request.
     GetBlockBodies,
+    /// Peer is handling a `GetAccountRange` request.
+    GetAccountRange,
+    /// Peer is handling a `GetStorageRanges` request.
+    GetStorageRanges,
+    /// Peer is handling a `GetByteCodes` request.
+    GetByteCodes,
+    /// Peer is handling a `GetTrieNodes` request.
+    GetTrieNodes,
     /// Peer session is about to close
     Closing,
 }
@@ -423,6 +463,30 @@ pub(crate) enum DownloadRequest<N: NetworkPrimitives> {
         #[allow(dead_code)]
         range_hint: Option<RangeInclusive<u64>>,
     },
+    /// Download the requested account range and send response through channel
+    GetAccountRange {
+        request: GetAccountRangeMessage,
+        response: oneshot::Sender<PeerRequestResult<AccountRangeMessage>>,
+        priority: Priority,
+    },
+    /// Download the requested storage ranges and send response through channel
+    GetStorageRanges {
+        request: GetStorageRangesMessage,
+        response: oneshot::Sender<PeerRequestResult<StorageRangesMessage>>,
+        priority: Priority,
+    },
+    /// Download the requested byte codes and send response through channel
+    GetByteCodes {
+        request: GetByteCodesMessage,
+        response: oneshot::Sender<PeerRequestResult<ByteCodesMessage>>,
+        priority: Priority,
+    },
+    /// Download the requested trie nodes and send response through channel
+    GetTrieNodes {
+        request: GetTrieNodesMessage,
+        response: oneshot::Sender<PeerRequestResult<TrieNodesMessage>>,
+        priority: Priority,
+    },
 }
 
 // === impl DownloadRequest ===
@@ -433,15 +497,22 @@ impl<N: NetworkPrimitives> DownloadRequest<N> {
         match self {
             Self::GetBlockHeaders { .. } => PeerState::GetBlockHeaders,
             Self::GetBlockBodies { .. } => PeerState::GetBlockBodies,
+            Self::GetAccountRange { .. } => PeerState::GetAccountRange,
+            Self::GetStorageRanges { .. } => PeerState::GetStorageRanges,
+            Self::GetByteCodes { .. } => PeerState::GetByteCodes,
+            Self::GetTrieNodes { .. } => PeerState::GetTrieNodes,
         }
     }
 
     /// Returns the requested priority of this request
     const fn get_priority(&self) -> &Priority {
         match self {
-            Self::GetBlockHeaders { priority, .. } | Self::GetBlockBodies { priority, .. } => {
-                priority
-            }
+            Self::GetBlockHeaders { priority, .. } |
+            Self::GetBlockBodies { priority, .. } |
+            Self::GetAccountRange { priority, .. } |
+            Self::GetStorageRanges { priority, .. } |
+            Self::GetByteCodes { priority, .. } |
+            Self::GetTrieNodes { priority, .. } => priority,
         }
     }
 

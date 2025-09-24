@@ -59,12 +59,12 @@ impl SnapClient for TestSnapClient {
 
     fn get_account_range_with_priority(
         &self,
-        _request: GetAccountRangeMessage,
+        request: GetAccountRangeMessage,
         _priority: reth_network_p2p::priority::Priority,
     ) -> Self::Output {
         let response = self.account_range_responses.first().cloned()
             .unwrap_or_else(|| AccountRangeMessage {
-                request_id: 0,
+                request_id: request.request_id,
                 accounts: vec![],
                 proof: vec![],
             });
@@ -74,12 +74,12 @@ impl SnapClient for TestSnapClient {
 
     fn get_storage_ranges_with_priority(
         &self,
-        _request: GetStorageRangesMessage,
+        request: GetStorageRangesMessage,
         _priority: reth_network_p2p::priority::Priority,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PeerRequestResult<StorageRangesMessage>> + Send + Sync>> {
         let response = self.storage_range_responses.first().cloned()
             .unwrap_or_else(|| StorageRangesMessage {
-                request_id: 0,
+                request_id: request.request_id,
                 slots: vec![],
                 proof: vec![],
             });
@@ -89,12 +89,12 @@ impl SnapClient for TestSnapClient {
 
     fn get_byte_codes_with_priority(
         &self,
-        _request: GetByteCodesMessage,
+        request: GetByteCodesMessage,
         _priority: reth_network_p2p::priority::Priority,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PeerRequestResult<ByteCodesMessage>> + Send + Sync>> {
         let response = self.byte_code_responses.first().cloned()
             .unwrap_or_else(|| ByteCodesMessage {
-                request_id: 0,
+                request_id: request.request_id,
                 codes: vec![],
             });
         
@@ -103,12 +103,12 @@ impl SnapClient for TestSnapClient {
 
     fn get_trie_nodes_with_priority(
         &self,
-        _request: GetTrieNodesMessage,
+        request: GetTrieNodesMessage,
         _priority: reth_network_p2p::priority::Priority,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PeerRequestResult<TrieNodesMessage>> + Send + Sync>> {
         let response = self.trie_node_responses.first().cloned()
             .unwrap_or_else(|| TrieNodesMessage {
-                request_id: 0,
+                request_id: request.request_id,
                 nodes: vec![],
             });
         

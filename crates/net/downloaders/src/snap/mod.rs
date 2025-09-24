@@ -11,4 +11,7 @@ pub mod queue;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
+#[cfg(test)]
+mod tests;
+
 pub use downloader::SnapSyncDownloader;

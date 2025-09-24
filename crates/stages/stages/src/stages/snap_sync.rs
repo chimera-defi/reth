@@ -344,3 +344,11 @@ mod tests {
         assert_eq!(stage.id(), StageId::SnapSync);
     }
 }
+
+#[cfg(test)]
+#[path = "snap_sync_tests.rs"]
+mod integration_tests;
+
+// Re-export integration tests when testing
+#[cfg(test)]
+pub use integration_tests::*;
