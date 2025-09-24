@@ -52,3 +52,12 @@ fn test_config_defaults() {
     assert_eq!(config.max_response_bytes, 2 * 1024 * 1024);
     assert_eq!(config.commit_threshold, 10_000);
 }
+
+#[cfg(test)]
+mod state_manager_tests;
+
+#[cfg(test)]
+mod peer_manager_tests;
+
+#[cfg(test)]
+mod progress_reporter_tests;

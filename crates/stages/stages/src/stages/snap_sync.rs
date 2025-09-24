@@ -11,7 +11,11 @@ use reth_db_api::{
     DbTxUnwindExt, RawKey, RawTable, RawValue,
 };
 use reth_etl::Collector;
-use reth_network_downloaders::snap::downloader::SnapSyncDownloader;
+use reth_network_downloaders::snap::{
+    downloader::SnapSyncDownloader,
+    SnapSyncStateManager, StateRootManager, SnapSyncPeerManager, PeerManager,
+    SnapSyncProgressReporter, ProgressReporter, DataType, PeerSelectionStrategy
+};
 use reth_network_p2p::snap::client::SnapClient;
 use reth_primitives_traits::{serde_bincode_compat, NodePrimitives};
 use reth_provider::{
@@ -53,6 +57,12 @@ pub struct SnapSyncStage<Provider, Client: SnapClient> {
     current_state_root: Option<B256>,
     /// Whether the stage is ready to write data
     is_ready_to_write: bool,
+    /// State manager for tracking state roots
+    state_manager: SnapSyncStateManager<Provider>,
+    /// Peer manager for snap sync peers
+    peer_manager: SnapSyncPeerManager<Client>,
+    /// Progress reporter for sync progress
+    progress_reporter: SnapSyncProgressReporter,
 }
 
 impl<Provider, Client> SnapSyncStage<Provider, Client>
@@ -67,7 +77,25 @@ where
         config: SnapSyncConfig,
         etl_config: EtlConfig,
     ) -> Self {
-        let downloader = SnapSyncDownloader::new(client, provider.clone(), config.clone());
+        let downloader = SnapSyncDownloader::new(client.clone(), provider.clone(), config.clone());
+        
+        // Initialize state manager
+        let state_manager = SnapSyncStateManager::new(provider.clone());
+        
+        // Initialize peer manager
+        let peer_manager = SnapSyncPeerManager::new(
+            PeerSelectionStrategy::BestPerformance,
+            config.max_concurrent_requests as usize,
+            0.8, // 80% minimum success rate
+            5,   // Max 5 consecutive failures
+            Duration::from_secs(300), // 5 minute timeout
+        );
+        
+        // Initialize progress reporter
+        let progress_reporter = SnapSyncProgressReporter::new(
+            Duration::from_secs(10), // Report every 10 seconds
+            true, // Enabled
+        );
         
         Self {
             provider,
@@ -79,6 +107,9 @@ where
             trie_node_collector: Collector::new(etl_config.file_size / 4, etl_config.dir),
             current_state_root: None,
             is_ready_to_write: false,
+            state_manager,
+            peer_manager,
+            progress_reporter,
         }
     }
 
@@ -105,10 +136,14 @@ where
                     match snap_result {
                         reth_network_downloaders::snap::downloader::SnapSyncResult::AccountRange(msg) => {
                             // Process account range data
+                            let account_count = msg.accounts.len() as u64;
                             for account in msg.accounts {
                                 self.account_collector.insert(account.hash, account.body)?;
                                 processed_count += 1;
                             }
+                            
+                            // Update progress
+                            self.progress_reporter.update_progress(DataType::Accounts, account_count);
                             
                             // Store proof data with deterministic keys
                             for (i, proof) in msg.proof.into_iter().enumerate() {
@@ -122,12 +157,17 @@ where
                         }
                         reth_network_downloaders::snap::downloader::SnapSyncResult::StorageRanges(msg) => {
                             // Process storage range data
+                            let mut storage_count = 0;
                             for account_slots in msg.slots {
                                 for slot in account_slots {
                                     self.storage_collector.insert(slot.hash, slot.data)?;
                                     processed_count += 1;
+                                    storage_count += 1;
                                 }
                             }
+                            
+                            // Update progress
+                            self.progress_reporter.update_progress(DataType::StorageSlots, storage_count);
                             
                             // Store proof data with deterministic keys
                             for (i, proof) in msg.proof.into_iter().enumerate() {
@@ -141,6 +181,7 @@ where
                         }
                         reth_network_downloaders::snap::downloader::SnapSyncResult::ByteCodes(msg) => {
                             // Process byte code data
+                            let byte_code_count = msg.codes.len() as u64;
                             for (i, code) in msg.codes.into_iter().enumerate() {
                                 // Use a deterministic hash based on the code content and index
                                 let mut hasher = Keccak256::new();
@@ -150,9 +191,13 @@ where
                                 self.byte_code_collector.insert(code_hash, code)?;
                                 processed_count += 1;
                             }
+                            
+                            // Update progress
+                            self.progress_reporter.update_progress(DataType::ByteCodes, byte_code_count);
                         }
                         reth_network_downloaders::snap::downloader::SnapSyncResult::TrieNodes(msg) => {
                             // Process trie node data
+                            let trie_node_count = msg.nodes.len() as u64;
                             for (i, node) in msg.nodes.into_iter().enumerate() {
                                 // Use a deterministic hash based on the node content and index
                                 let mut hasher = Keccak256::new();
@@ -162,6 +207,9 @@ where
                                 self.trie_node_collector.insert(node_hash, node)?;
                                 processed_count += 1;
                             }
+                            
+                            // Update progress
+                            self.progress_reporter.update_progress(DataType::TrieNodes, trie_node_count);
                         }
                     }
                 }
@@ -173,6 +221,16 @@ where
         }
         
         Ok(processed_count)
+    }
+
+    /// Get current sync progress
+    pub fn get_sync_progress(&self) -> String {
+        self.progress_reporter.get_summary()
+    }
+
+    /// Get peer statistics
+    pub fn get_peer_stats(&self) -> reth_net_downloaders::snap::PeerStats {
+        self.peer_manager.get_peer_stats()
     }
 
     /// Write snap sync data to storage
@@ -285,6 +343,11 @@ where
         let state_root = self.downloader.get_current_state_root()
             .map_err(|e| StageError::Fatal(Box::new(e)))?;
         
+        // Set target state root in state manager
+        if let Err(e) = self.state_manager.set_target_state_root(state_root) {
+            return Err(StageError::Fatal(Box::new(e)));
+        }
+        
         // Start snap sync if we haven't already
         if self.current_state_root.is_none() {
             let rt = tokio::runtime::Handle::current();
@@ -302,9 +365,15 @@ where
             0
         };
         
+        // Report final progress
+        let progress_summary = self.get_sync_progress();
+        let peer_stats = self.get_peer_stats();
+        
         info!(target: "sync::stages::snap_sync", 
             processed = processed_count,
             written = written_count,
+            progress = %progress_summary,
+            peer_stats = ?peer_stats,
             "Completed snap sync stage execution"
         );
 
