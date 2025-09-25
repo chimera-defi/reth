@@ -67,3 +67,9 @@ mod state_discovery_tests;
 
 #[cfg(test)]
 mod state_discovery_integration_test;
+
+#[cfg(test)]
+mod state_verifier_tests;
+
+#[cfg(test)]
+mod state_verifier_integration_test;

@@ -12,6 +12,7 @@ pub mod state_manager;
 pub mod peer_manager;
 pub mod progress_reporter;
 pub mod state_discovery;
+pub mod state_verifier;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -25,3 +26,4 @@ pub use state_manager::{SnapSyncStateManager, StateRootManager, SyncProgress, Da
 pub use peer_manager::{SnapSyncPeerManager, PeerManager, PeerSelectionStrategy, PeerStats, SnapSyncPeer, PeerMetrics};
 pub use progress_reporter::{SnapSyncProgressReporter, ProgressReporter, ProgressReport, DataProgress, SyncStats};
 pub use state_discovery::{StateRootDiscovery, StateRootDiscoveryTrait, StateRootDiscoveryConfig, StateRootDiscoveryStats};
+pub use state_verifier::{StateVerifier, StateVerificationTrait, StateVerificationConfig, VerificationResult, VerificationStats, AccountRange, StorageRange, StateData, AccountState};
