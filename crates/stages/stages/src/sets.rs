@@ -45,6 +45,8 @@ use crate::{
     },
     StageSet, StageSetBuilder,
 };
+
+pub mod sync_mode;
 use alloy_primitives::B256;
 use reth_config::config::StageConfig;
 use reth_consensus::{ConsensusError, FullConsensus};

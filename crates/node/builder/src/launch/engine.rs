@@ -8,6 +8,7 @@ use crate::{
     AddOns, AddOnsContext, FullNode, LaunchContext, LaunchNode, NodeAdapter,
     NodeBuilderWithComponents, NodeComponents, NodeComponentsBuilder, NodeHandle, NodeTypesAdapter,
 };
+use reth_stages::sets::sync_mode::SyncMode as StageSyncMode;
 use alloy_consensus::BlockHeader;
 use futures::{stream_select, StreamExt};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -154,6 +155,7 @@ impl EngineNodeLauncher {
             ctx.components().evm_config().clone(),
             maybe_exex_manager_handle.clone().unwrap_or_else(ExExManagerHandle::empty),
             ctx.era_import_source(),
+            ctx.node_config().sync.effective_sync_mode().into(),
         )?;
 
         // The new engine writes directly to static files. This ensures that they're up to the tip.
@@ -381,5 +383,16 @@ where
 
     fn launch_node(self, target: NodeBuilderWithComponents<T, CB, AO>) -> Self::Future {
         Box::pin(self.launch_node(target))
+    }
+}
+
+/// Convert CLI SyncMode to Stage SyncMode
+impl From<reth_node_core::args::SyncMode> for StageSyncMode {
+    fn from(mode: reth_node_core::args::SyncMode) -> Self {
+        match mode {
+            reth_node_core::args::SyncMode::Full => StageSyncMode::Full,
+            reth_node_core::args::SyncMode::Snap => StageSyncMode::Snap,
+            reth_node_core::args::SyncMode::Checkpoint => StageSyncMode::Checkpoint,
+        }
     }
 }

@@ -19,6 +19,7 @@ use reth_node_api::HeaderTy;
 use reth_provider::{providers::ProviderNodeTypes, ProviderFactory};
 use reth_stages::{
     prelude::DefaultStages,
+    sets::sync_mode::{SyncModeStages, SyncMode},
     stages::{EraImportSource, ExecutionStage},
     Pipeline, StageSet,
 };
@@ -42,6 +43,7 @@ pub fn build_networked_pipeline<N, Client, Evm>(
     evm_config: Evm,
     exex_manager_handle: ExExManagerHandle<N::Primitives>,
     era_import_source: Option<EraImportSource>,
+    sync_mode: SyncMode,
 ) -> eyre::Result<Pipeline<N>>
 where
     N: ProviderNodeTypes,
@@ -71,6 +73,7 @@ where
         evm_config,
         exex_manager_handle,
         era_import_source,
+        sync_mode,
     )?;
 
     Ok(pipeline)
@@ -92,6 +95,7 @@ pub fn build_pipeline<N, H, B, S, Evm>(
     evm_config: Evm,
     exex_manager_handle: ExExManagerHandle<N::Primitives>,
     era_import_source: Option<EraImportSource>,
+    sync_mode: SyncMode,
 ) -> eyre::Result<Pipeline<N>>
 where
     N: ProviderNodeTypes,
@@ -115,14 +119,15 @@ where
         .with_tip_sender(tip_tx)
         .with_metrics_tx(metrics_tx)
         .add_stages(
-            DefaultStages::new(
+            SyncModeStages::new(
+                sync_mode,
                 provider_factory.clone(),
                 tip_rx,
-                Arc::clone(&consensus),
                 header_downloader,
                 body_downloader,
-                snap_client,
+                Arc::new(snap_client),
                 evm_config.clone(),
+                Arc::clone(&consensus),
                 stage_config.clone(),
                 prune_modes,
                 era_import_source,
