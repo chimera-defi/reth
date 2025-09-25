@@ -61,3 +61,9 @@ mod peer_manager_tests;
 
 #[cfg(test)]
 mod progress_reporter_tests;
+
+#[cfg(test)]
+mod state_discovery_tests;
+
+#[cfg(test)]
+mod state_discovery_integration_test;
