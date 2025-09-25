@@ -2,12 +2,36 @@
 
 use alloy_primitives::B256;
 use reth_network_p2p::snap::client::SnapClient;
+use reth_stages_api::StageError;
 use std::{
     collections::HashMap,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tracing::*;
+
+/// Error type for state root discovery operations
+#[derive(Debug, thiserror::Error)]
+pub enum StateRootDiscoveryError {
+    /// Network error during peer query
+    #[error("Network error: {0}")]
+    Network(String),
+    /// Timeout error
+    #[error("Timeout after {0:?}")]
+    Timeout(Duration),
+    /// Invalid state root
+    #[error("Invalid state root: {0:?}")]
+    InvalidStateRoot(B256),
+    /// No suitable peers found
+    #[error("No suitable peers found")]
+    NoSuitablePeers,
+}
+
+impl From<StateRootDiscoveryError> for StageError {
+    fn from(err: StateRootDiscoveryError) -> Self {
+        StageError::Fatal(Box::new(err))
+    }
+}
 
 /// State root discovery system that queries peers for recent state roots
 /// and selects a suitable one for snap sync.
@@ -76,9 +100,9 @@ impl<C: SnapClient> StateRootDiscovery<C> {
     pub fn add_peer(&mut self, peer_id: String) {
         if self.peers.len() < self.max_peers {
             self.peers.push(peer_id);
-            info!(target: "snap_sync::state_discovery", peer_id = %self.peers.last().unwrap(), "Added peer for state root discovery");
+            info!(target: "sync::stages::snap_sync::state_discovery", peer_id = %self.peers.last().unwrap(), "Added peer for state root discovery");
         } else {
-            warn!(target: "snap_sync::state_discovery", peer_id = %peer_id, "Maximum number of peers reached, ignoring new peer");
+            warn!(target: "sync::stages::snap_sync::state_discovery", peer_id = %peer_id, "Maximum number of peers reached, ignoring new peer");
         }
     }
 
@@ -86,13 +110,13 @@ impl<C: SnapClient> StateRootDiscovery<C> {
     pub fn remove_peer(&mut self, peer_id: &str) {
         self.peers.retain(|p| p != peer_id);
         self.peer_state_roots.remove(peer_id);
-        info!(target: "snap_sync::state_discovery", peer_id = %peer_id, "Removed peer from state root discovery");
+        info!(target: "sync::stages::snap_sync::state_discovery", peer_id = %peer_id, "Removed peer from state root discovery");
     }
 
     /// Update the state root reported by a peer
     pub fn update_peer_state_root(&mut self, peer_id: &str, state_root: B256, block_number: u64) {
         self.peer_state_roots.insert(peer_id.to_string(), (state_root, block_number));
-        debug!(target: "snap_sync::state_discovery", 
+        debug!(target: "sync::stages::snap_sync::state_discovery", 
             peer_id = %peer_id, 
             state_root = ?state_root, 
             block_number = block_number,
@@ -101,8 +125,8 @@ impl<C: SnapClient> StateRootDiscovery<C> {
     }
 
     /// Query all peers for their latest state roots
-    pub async fn query_peers_for_state_roots(&mut self) -> Result<Vec<(B256, u64)>, Box<dyn std::error::Error>> {
-        info!(target: "snap_sync::state_discovery", peer_count = self.peers.len(), "Querying peers for state roots");
+    pub async fn query_peers_for_state_roots(&mut self) -> Result<Vec<(B256, u64)>, StageError> {
+        info!(target: "sync::stages::snap_sync::state_discovery", peer_count = self.peers.len(), "Querying peers for state roots");
         
         let mut state_roots = Vec::new();
         
@@ -111,7 +135,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
                 Ok((state_root, block_number)) => {
                     self.update_peer_state_root(peer_id, state_root, block_number);
                     state_roots.push((state_root, block_number));
-                    info!(target: "snap_sync::state_discovery", 
+                    info!(target: "sync::stages::snap_sync::state_discovery", 
                         peer_id = %peer_id, 
                         state_root = ?state_root, 
                         block_number = block_number,
@@ -119,7 +143,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
                     );
                 }
                 Err(e) => {
-                    warn!(target: "snap_sync::state_discovery", 
+                    warn!(target: "sync::stages::snap_sync::state_discovery", 
                         peer_id = %peer_id, 
                         error = ?e,
                         "Failed to query peer for state root"
@@ -128,7 +152,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
             }
         }
         
-        info!(target: "snap_sync::state_discovery", 
+        info!(target: "sync::stages::snap_sync::state_discovery", 
             queried_peers = self.peers.len(),
             successful_queries = state_roots.len(),
             "Completed peer state root queries"
@@ -138,7 +162,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
     }
 
     /// Query a specific peer for its latest state root
-    async fn query_peer_for_state_root(&self, peer_id: &str) -> Result<(B256, u64), Box<dyn std::error::Error>> {
+    async fn query_peer_for_state_root(&self, peer_id: &str) -> Result<(B256, u64), StageError> {
         // In a real implementation, this would:
         // 1. Send a request to the peer asking for its latest state root
         // 2. Wait for the response with a timeout
@@ -158,7 +182,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
     }
 
     /// Get the current block number (mock implementation)
-    async fn get_current_block_number(&self) -> Result<u64, Box<dyn std::error::Error>> {
+    async fn get_current_block_number(&self) -> Result<u64, StageError> {
         // In a real implementation, this would query the network for the current block number
         // For now, we'll simulate it
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
@@ -169,7 +193,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
     /// Select a suitable recent state root for snap sync
     pub fn select_recent_state_root(&self) -> Option<(B256, u64)> {
         if self.peer_state_roots.is_empty() {
-            warn!(target: "snap_sync::state_discovery", "No peer state roots available for selection");
+            warn!(target: "sync::stages::snap_sync::state_discovery", "No peer state roots available for selection");
             return None;
         }
 
@@ -186,7 +210,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
             .collect();
 
         if suitable_peers.is_empty() {
-            warn!(target: "snap_sync::state_discovery", 
+            warn!(target: "sync::stages::snap_sync::state_discovery", 
                 current_block = current_block,
                 min_age = min_age_blocks,
                 max_age = max_age_blocks,
@@ -201,7 +225,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
         // Select the most recent suitable state root
         let (peer_id, (state_root, block_number)) = suitable_peers[0];
         
-        info!(target: "snap_sync::state_discovery", 
+        info!(target: "sync::stages::snap_sync::state_discovery", 
             peer_id = %peer_id,
             state_root = ?state_root,
             block_number = block_number,
@@ -247,7 +271,7 @@ impl<C: SnapClient> StateRootDiscovery<C> {
     pub fn clear_peers(&mut self) {
         self.peers.clear();
         self.peer_state_roots.clear();
-        info!(target: "snap_sync::state_discovery", "Cleared all peers and state roots");
+        info!(target: "sync::stages::snap_sync::state_discovery", "Cleared all peers and state roots");
     }
 
     /// Get discovery statistics
@@ -283,7 +307,7 @@ pub trait StateRootDiscoveryTrait {
     fn remove_peer(&mut self, peer_id: &str);
     
     /// Query all peers for their latest state roots
-    fn query_peers_for_state_roots(&mut self) -> impl std::future::Future<Output = Result<Vec<(B256, u64)>, Box<dyn std::error::Error>>> + Send;
+    fn query_peers_for_state_roots(&mut self) -> impl std::future::Future<Output = Result<Vec<(B256, u64)>, StageError>> + Send;
     
     /// Select a suitable recent state root for snap sync
     fn select_recent_state_root(&self) -> Option<(B256, u64)>;

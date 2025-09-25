@@ -129,8 +129,8 @@ mod tests {
         assert!(is_valid);
     }
 
-    #[test]
-    fn test_query_peers_for_state_roots() {
+    #[tokio::test]
+    async fn test_query_peers_for_state_roots() {
         let client = Arc::new(TestSnapClient::new());
         let mut discovery = StateRootDiscovery::new(client, 5, Duration::from_secs(30));
         
@@ -139,7 +139,7 @@ mod tests {
         
         // Mock the client to return state roots
         // In a real implementation, this would query the network
-        let state_roots = discovery.query_peers_for_state_roots();
+        let state_roots = discovery.query_peers_for_state_roots().await;
         assert!(state_roots.is_ok());
     }
 

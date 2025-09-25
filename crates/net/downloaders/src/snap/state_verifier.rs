@@ -2,12 +2,42 @@
 
 use alloy_primitives::{B256, Bytes, Address, U256};
 use reth_network_p2p::snap::client::SnapClient;
+use reth_stages_api::StageError;
 use std::{
     collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tracing::*;
+
+/// Error type for state verification operations
+#[derive(Debug, thiserror::Error)]
+pub enum StateVerificationError {
+    /// Invalid Merkle proof
+    #[error("Invalid Merkle proof")]
+    InvalidMerkleProof,
+    /// Invalid state root
+    #[error("Invalid state root: expected {expected:?}, got {actual:?}")]
+    InvalidStateRoot { expected: B256, actual: B256 },
+    /// Invalid byte code
+    #[error("Invalid byte code: {0:?}")]
+    InvalidByteCode(B256),
+    /// Invalid trie node
+    #[error("Invalid trie node: {0:?}")]
+    InvalidTrieNode(B256),
+    /// State trie reconstruction failed
+    #[error("State trie reconstruction failed: {0}")]
+    StateTrieReconstructionFailed(String),
+    /// Verification timeout
+    #[error("Verification timeout after {0:?}")]
+    Timeout(Duration),
+}
+
+impl From<StateVerificationError> for StageError {
+    fn from(err: StateVerificationError) -> Self {
+        StageError::Fatal(Box::new(err))
+    }
+}
 
 /// State verification system that verifies Merkle proofs and reconstructs state trie
 #[derive(Debug)]
@@ -152,10 +182,10 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify an account range using Merkle proof
-    pub fn verify_account_range(&mut self, account_range: AccountRange, state_root: B256) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    pub fn verify_account_range(&mut self, account_range: AccountRange, state_root: B256) -> Result<VerificationResult, StageError> {
         let start_time = Instant::now();
         
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             account_count = account_range.accounts.len(),
             proof_length = account_range.proof.len(),
             "Starting account range verification"
@@ -163,7 +193,7 @@ impl<C: SnapClient> StateVerifier<C> {
 
         // Basic validation
         if account_range.accounts.is_empty() {
-            warn!(target: "snap_sync::state_verifier", "Empty account range provided");
+            warn!(target: "sync::stages::snap_sync::state_verifier", "Empty account range provided");
             return Ok(VerificationResult {
                 is_valid: false,
                 verified_accounts: 0,
@@ -175,7 +205,7 @@ impl<C: SnapClient> StateVerifier<C> {
         }
 
         if account_range.proof.is_empty() {
-            warn!(target: "snap_sync::state_verifier", "Empty proof provided for account range");
+            warn!(target: "sync::stages::snap_sync::state_verifier", "Empty proof provided for account range");
             return Ok(VerificationResult {
                 is_valid: false,
                 verified_accounts: 0,
@@ -205,7 +235,7 @@ impl<C: SnapClient> StateVerifier<C> {
         let result_id = format!("account_range_{}", account_range.accounts.len());
         self.verification_results.insert(result_id, result.clone());
 
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             is_valid = is_valid,
             verified_accounts = verified_accounts,
             verification_time_ms = verification_time.as_millis(),
@@ -216,10 +246,10 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify a storage range using Merkle proof
-    pub fn verify_storage_range(&mut self, storage_range: StorageRange, storage_root: B256) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    pub fn verify_storage_range(&mut self, storage_range: StorageRange, storage_root: B256) -> Result<VerificationResult, StageError> {
         let start_time = Instant::now();
         
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             account = ?storage_range.account,
             slot_count = storage_range.storage_slots.len(),
             proof_length = storage_range.proof.len(),
@@ -228,7 +258,7 @@ impl<C: SnapClient> StateVerifier<C> {
 
         // Basic validation
         if storage_range.storage_slots.is_empty() {
-            warn!(target: "snap_sync::state_verifier", "Empty storage range provided");
+            warn!(target: "sync::stages::snap_sync::state_verifier", "Empty storage range provided");
             return Ok(VerificationResult {
                 is_valid: false,
                 verified_accounts: 0,
@@ -240,7 +270,7 @@ impl<C: SnapClient> StateVerifier<C> {
         }
 
         if storage_range.proof.is_empty() {
-            warn!(target: "snap_sync::state_verifier", "Empty proof provided for storage range");
+            warn!(target: "sync::stages::snap_sync::state_verifier", "Empty proof provided for storage range");
             return Ok(VerificationResult {
                 is_valid: false,
                 verified_accounts: 0,
@@ -270,7 +300,7 @@ impl<C: SnapClient> StateVerifier<C> {
         let result_id = format!("storage_range_{}_{}", storage_range.account, storage_range.storage_slots.len());
         self.verification_results.insert(result_id, result.clone());
 
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             is_valid = is_valid,
             verified_slots = verified_slots,
             verification_time_ms = verification_time.as_millis(),
@@ -281,17 +311,17 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify byte codes
-    pub fn verify_byte_codes(&mut self, byte_codes: Vec<(B256, Bytes)>) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    pub fn verify_byte_codes(&mut self, byte_codes: Vec<(B256, Bytes)>) -> Result<VerificationResult, StageError> {
         let start_time = Instant::now();
         
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             code_count = byte_codes.len(),
             "Starting byte code verification"
         );
 
         // Basic validation
         if byte_codes.is_empty() {
-            warn!(target: "snap_sync::state_verifier", "Empty byte code list provided");
+            warn!(target: "sync::stages::snap_sync::state_verifier", "Empty byte code list provided");
             return Ok(VerificationResult {
                 is_valid: false,
                 verified_accounts: 0,
@@ -326,7 +356,7 @@ impl<C: SnapClient> StateVerifier<C> {
         let result_id = format!("byte_codes_{}", byte_codes.len());
         self.verification_results.insert(result_id, result.clone());
 
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             is_valid = is_valid,
             verified_codes = verified_codes,
             verification_time_ms = verification_time.as_millis(),
@@ -337,17 +367,17 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify trie nodes
-    pub fn verify_trie_nodes(&mut self, trie_nodes: Vec<(B256, Bytes)>) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    pub fn verify_trie_nodes(&mut self, trie_nodes: Vec<(B256, Bytes)>) -> Result<VerificationResult, StageError> {
         let start_time = Instant::now();
         
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             node_count = trie_nodes.len(),
             "Starting trie node verification"
         );
 
         // Basic validation
         if trie_nodes.is_empty() {
-            warn!(target: "snap_sync::state_verifier", "Empty trie node list provided");
+            warn!(target: "sync::stages::snap_sync::state_verifier", "Empty trie node list provided");
             return Ok(VerificationResult {
                 is_valid: false,
                 verified_accounts: 0,
@@ -382,7 +412,7 @@ impl<C: SnapClient> StateVerifier<C> {
         let result_id = format!("trie_nodes_{}", trie_nodes.len());
         self.verification_results.insert(result_id, result.clone());
 
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             is_valid = is_valid,
             verified_nodes = verified_nodes,
             verification_time_ms = verification_time.as_millis(),
@@ -393,10 +423,10 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Reconstruct state trie from downloaded data
-    pub fn reconstruct_state_trie(&mut self, state_data: StateData) -> Result<HashMap<B256, Bytes>, Box<dyn std::error::Error>> {
+    pub fn reconstruct_state_trie(&mut self, state_data: StateData) -> Result<HashMap<B256, Bytes>, StageError> {
         let start_time = Instant::now();
         
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             account_ranges = state_data.account_ranges.len(),
             storage_ranges = state_data.storage_ranges.len(),
             byte_codes = state_data.byte_codes.len(),
@@ -437,7 +467,7 @@ impl<C: SnapClient> StateVerifier<C> {
 
         let reconstruction_time = start_time.elapsed();
 
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             state_trie_size = state_trie.len(),
             reconstruction_time_ms = reconstruction_time.as_millis(),
             "State trie reconstruction completed"
@@ -447,10 +477,10 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify state root matches target
-    pub fn verify_state_root(&mut self, state_trie: HashMap<B256, Bytes>, target_state_root: B256) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    pub fn verify_state_root(&mut self, state_trie: HashMap<B256, Bytes>, target_state_root: B256) -> Result<VerificationResult, StageError> {
         let start_time = Instant::now();
         
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             state_trie_size = state_trie.len(),
             target_state_root = ?target_state_root,
             "Starting state root verification"
@@ -475,7 +505,7 @@ impl<C: SnapClient> StateVerifier<C> {
         let result_id = format!("state_root_{}", state_trie.len());
         self.verification_results.insert(result_id, result.clone());
 
-        info!(target: "snap_sync::state_verifier", 
+        info!(target: "sync::stages::snap_sync::state_verifier", 
             is_valid = is_valid,
             calculated_state_root = ?calculated_state_root,
             target_state_root = ?target_state_root,
@@ -487,7 +517,7 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify Merkle proof (mock implementation)
-    fn verify_merkle_proof<T>(&self, data: &[T], proof: &[B256], root: B256) -> Result<bool, Box<dyn std::error::Error>> {
+    fn verify_merkle_proof<T>(&self, data: &[T], proof: &[B256], root: B256) -> Result<bool, StageError> {
         // In a real implementation, this would:
         // 1. Calculate the Merkle root from the data
         // 2. Use the proof to verify the root matches
@@ -506,7 +536,7 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Calculate Merkle root (mock implementation)
-    fn calculate_merkle_root<T>(&self, data: &[T], proof: &[B256]) -> Result<B256, Box<dyn std::error::Error>> {
+    fn calculate_merkle_root<T>(&self, data: &[T], proof: &[B256]) -> Result<B256, StageError> {
         // In a real implementation, this would calculate the actual Merkle root
         // For now, we'll simulate it
         
@@ -531,7 +561,7 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify byte code (mock implementation)
-    fn verify_byte_code(&self, code_hash: &B256, code: &Bytes) -> Result<bool, Box<dyn std::error::Error>> {
+    fn verify_byte_code(&self, code_hash: &B256, code: &Bytes) -> Result<bool, StageError> {
         // In a real implementation, this would:
         // 1. Calculate the hash of the byte code
         // 2. Verify it matches the provided code_hash
@@ -547,7 +577,7 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Verify trie node (mock implementation)
-    fn verify_trie_node(&self, node_hash: &B256, node_data: &Bytes) -> Result<bool, Box<dyn std::error::Error>> {
+    fn verify_trie_node(&self, node_hash: &B256, node_data: &Bytes) -> Result<bool, StageError> {
         // In a real implementation, this would:
         // 1. Calculate the hash of the trie node
         // 2. Verify it matches the provided node_hash
@@ -601,7 +631,7 @@ impl<C: SnapClient> StateVerifier<C> {
     }
 
     /// Calculate state root from state trie
-    fn calculate_state_root(&self, state_trie: HashMap<B256, Bytes>) -> Result<B256, Box<dyn std::error::Error>> {
+    fn calculate_state_root(&self, state_trie: HashMap<B256, Bytes>) -> Result<B256, StageError> {
         // In a real implementation, this would:
         // 1. Build a proper Merkle tree from the state trie
         // 2. Calculate the root hash
@@ -657,56 +687,56 @@ impl<C: SnapClient> StateVerifier<C> {
     /// Clear verification results
     pub fn clear_verification_results(&mut self) {
         self.verification_results.clear();
-        info!(target: "snap_sync::state_verifier", "Cleared all verification results");
+        info!(target: "sync::stages::snap_sync::state_verifier", "Cleared all verification results");
     }
 }
 
 /// Trait for state verification
 pub trait StateVerificationTrait {
     /// Verify an account range
-    fn verify_account_range(&mut self, account_range: AccountRange, state_root: B256) -> impl std::future::Future<Output = Result<VerificationResult, Box<dyn std::error::Error>>> + Send;
+    fn verify_account_range(&mut self, account_range: AccountRange, state_root: B256) -> impl std::future::Future<Output = Result<VerificationResult, StageError>> + Send;
     
     /// Verify a storage range
-    fn verify_storage_range(&mut self, storage_range: StorageRange, storage_root: B256) -> impl std::future::Future<Output = Result<VerificationResult, Box<dyn std::error::Error>>> + Send;
+    fn verify_storage_range(&mut self, storage_range: StorageRange, storage_root: B256) -> impl std::future::Future<Output = Result<VerificationResult, StageError>> + Send;
     
     /// Verify byte codes
-    fn verify_byte_codes(&mut self, byte_codes: Vec<(B256, Bytes)>) -> impl std::future::Future<Output = Result<VerificationResult, Box<dyn std::error::Error>>> + Send;
+    fn verify_byte_codes(&mut self, byte_codes: Vec<(B256, Bytes)>) -> impl std::future::Future<Output = Result<VerificationResult, StageError>> + Send;
     
     /// Verify trie nodes
-    fn verify_trie_nodes(&mut self, trie_nodes: Vec<(B256, Bytes)>) -> impl std::future::Future<Output = Result<VerificationResult, Box<dyn std::error::Error>>> + Send;
+    fn verify_trie_nodes(&mut self, trie_nodes: Vec<(B256, Bytes)>) -> impl std::future::Future<Output = Result<VerificationResult, StageError>> + Send;
     
     /// Reconstruct state trie
-    fn reconstruct_state_trie(&mut self, state_data: StateData) -> impl std::future::Future<Output = Result<HashMap<B256, Bytes>, Box<dyn std::error::Error>>> + Send;
+    fn reconstruct_state_trie(&mut self, state_data: StateData) -> impl std::future::Future<Output = Result<HashMap<B256, Bytes>, StageError>> + Send;
     
     /// Verify state root
-    fn verify_state_root(&mut self, state_trie: HashMap<B256, Bytes>, target_state_root: B256) -> impl std::future::Future<Output = Result<VerificationResult, Box<dyn std::error::Error>>> + Send;
+    fn verify_state_root(&mut self, state_trie: HashMap<B256, Bytes>, target_state_root: B256) -> impl std::future::Future<Output = Result<VerificationResult, StageError>> + Send;
     
     /// Get verification statistics
     fn get_verification_stats(&self) -> VerificationStats;
 }
 
 impl<C: SnapClient> StateVerificationTrait for StateVerifier<C> {
-    async fn verify_account_range(&mut self, account_range: AccountRange, state_root: B256) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    async fn verify_account_range(&mut self, account_range: AccountRange, state_root: B256) -> Result<VerificationResult, StageError> {
         self.verify_account_range(account_range, state_root)
     }
 
-    async fn verify_storage_range(&mut self, storage_range: StorageRange, storage_root: B256) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    async fn verify_storage_range(&mut self, storage_range: StorageRange, storage_root: B256) -> Result<VerificationResult, StageError> {
         self.verify_storage_range(storage_range, storage_root)
     }
 
-    async fn verify_byte_codes(&mut self, byte_codes: Vec<(B256, Bytes)>) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    async fn verify_byte_codes(&mut self, byte_codes: Vec<(B256, Bytes)>) -> Result<VerificationResult, StageError> {
         self.verify_byte_codes(byte_codes)
     }
 
-    async fn verify_trie_nodes(&mut self, trie_nodes: Vec<(B256, Bytes)>) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    async fn verify_trie_nodes(&mut self, trie_nodes: Vec<(B256, Bytes)>) -> Result<VerificationResult, StageError> {
         self.verify_trie_nodes(trie_nodes)
     }
 
-    async fn reconstruct_state_trie(&mut self, state_data: StateData) -> Result<HashMap<B256, Bytes>, Box<dyn std::error::Error>> {
+    async fn reconstruct_state_trie(&mut self, state_data: StateData) -> Result<HashMap<B256, Bytes>, StageError> {
         self.reconstruct_state_trie(state_data)
     }
 
-    async fn verify_state_root(&mut self, state_trie: HashMap<B256, Bytes>, target_state_root: B256) -> Result<VerificationResult, Box<dyn std::error::Error>> {
+    async fn verify_state_root(&mut self, state_trie: HashMap<B256, Bytes>, target_state_root: B256) -> Result<VerificationResult, StageError> {
         self.verify_state_root(state_trie, target_state_root)
     }
 
