@@ -13,6 +13,7 @@ pub mod peer_manager;
 pub mod progress_reporter;
 pub mod state_discovery;
 pub mod state_verifier;
+pub mod state_healer;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
@@ -27,3 +28,4 @@ pub use peer_manager::{SnapSyncPeerManager, PeerManager, PeerSelectionStrategy, 
 pub use progress_reporter::{SnapSyncProgressReporter, ProgressReporter, ProgressReport, DataProgress, SyncStats};
 pub use state_discovery::{StateRootDiscovery, StateRootDiscoveryTrait, StateRootDiscoveryConfig, StateRootDiscoveryStats};
 pub use state_verifier::{StateVerifier, StateVerificationTrait, StateVerificationConfig, VerificationResult, VerificationStats, AccountRange, StorageRange, StateData, AccountState};
+pub use state_healer::{StateHealer, StateHealingTrait, StateHealingConfig, MissingData, HealingResult, HealingStats};

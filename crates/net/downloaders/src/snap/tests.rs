@@ -73,3 +73,9 @@ mod state_verifier_tests;
 
 #[cfg(test)]
 mod state_verifier_integration_test;
+
+#[cfg(test)]
+mod state_healer_tests;
+
+#[cfg(test)]
+mod state_healer_integration_test;
