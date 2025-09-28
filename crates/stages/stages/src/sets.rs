@@ -355,6 +355,8 @@ pub struct ExecutionStages<E: ConfigureEvm> {
     consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
     /// Configuration for each stage in the pipeline
     stages_config: StageConfig,
+    /// Optional snap client for snap sync (when enabled)
+    snap_client: Option<Arc<dyn reth_net_p2p::snap::SnapClient + Send + Sync + 'static>>,
 }
 
 impl<E: ConfigureEvm> ExecutionStages<E> {
@@ -364,7 +366,27 @@ impl<E: ConfigureEvm> ExecutionStages<E> {
         consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
         stages_config: StageConfig,
     ) -> Self {
-        Self { evm_config: executor_provider, consensus, stages_config }
+        Self { 
+            evm_config: executor_provider, 
+            consensus, 
+            stages_config,
+            snap_client: None,
+        }
+    }
+
+    /// Create a new set of execution stages with snap client.
+    pub fn with_snap_client(
+        executor_provider: E,
+        consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
+        stages_config: StageConfig,
+        snap_client: Option<Arc<dyn reth_net_p2p::snap::SnapClient + Send + Sync + 'static>>,
+    ) -> Self {
+        Self { 
+            evm_config: executor_provider, 
+            consensus, 
+            stages_config,
+            snap_client,
+        }
     }
 }
 
@@ -373,33 +395,31 @@ where
     E: ConfigureEvm + 'static,
     SenderRecoveryStage: Stage<Provider>,
     ExecutionStage<E>: Stage<Provider>,
+    SnapSyncStage<Arc<dyn reth_net_p2p::snap::SnapClient + Send + Sync + 'static>>: Stage<Provider>,
 {
     fn builder(self) -> StageSetBuilder<Provider> {
         let mut builder = StageSetBuilder::default();
         
-        // Check if snap sync is enabled
+        // Check if snap sync is enabled and snap client is available
         if self.stages_config.snap_sync.enabled {
-            // When snap sync is enabled, replace traditional stages with SnapSyncStage
-            // Note: In a real implementation, we would need to pass the snap client here
-            // For now, we'll add a placeholder that shows the intended architecture
-            warn!("Snap sync is enabled but requires snap client integration");
-            
-            // Note: SnapSyncStage requires snap client integration
-            // This would be added when snap client is available:
-            // builder = builder.add_stage(SnapSyncStage::new(
-            //     self.stages_config.snap_sync.clone(),
-            //     snap_client,
-            // ));
-            
-            // For now, fall back to traditional stages
-            builder = builder
-                .add_stage(SenderRecoveryStage::new(self.stages_config.sender_recovery))
-                .add_stage(ExecutionStage::from_config(
-                    self.evm_config,
-                    self.consensus,
-                    self.stages_config.execution,
-                    self.stages_config.execution_external_clean_threshold(),
+            if let Some(snap_client) = self.snap_client {
+                // When snap sync is enabled, replace traditional stages with SnapSyncStage
+                builder = builder.add_stage(SnapSyncStage::new(
+                    self.stages_config.snap_sync.clone(),
+                    snap_client,
                 ));
+            } else {
+                // Snap sync is enabled but no snap client provided, fall back to traditional stages
+                warn!("Snap sync is enabled but no snap client provided, falling back to traditional stages");
+                builder = builder
+                    .add_stage(SenderRecoveryStage::new(self.stages_config.sender_recovery))
+                    .add_stage(ExecutionStage::from_config(
+                        self.evm_config,
+                        self.consensus,
+                        self.stages_config.execution,
+                        self.stages_config.execution_external_clean_threshold(),
+                    ));
+            }
         } else {
             // Traditional stages when snap sync is disabled
             builder = builder
