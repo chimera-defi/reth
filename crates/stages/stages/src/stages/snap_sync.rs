@@ -18,8 +18,10 @@ use reth_stages_api::{
     EntitiesCheckpoint, ExecInput, ExecOutput, Stage, StageCheckpoint, StageError,
     StageId, UnwindInput, UnwindOutput,
 };
+use futures::Future;
 use std::{
     collections::BTreeMap,
+    pin::Pin,
     sync::Arc,
     task::{ready, Context, Poll},
 };
@@ -78,6 +80,8 @@ pub struct SnapSyncStage<SnapClient> {
     header_receiver: Option<watch::Receiver<B256>>,
     /// Metrics for monitoring
     metrics: SnapSyncMetrics,
+    /// Pending async futures for snap requests
+    pending_futures: Vec<Pin<Box<dyn Future<Output = Result<reth_net_p2p::error::WithPeerId<AccountRangeMessage>, reth_net_p2p::error::PeerRequestError>> + Send + 'static>>>,
 }
 
 /// Metrics for monitoring snap sync performance
@@ -113,6 +117,7 @@ where
             is_downloading: false,
             header_receiver: None,
             metrics: SnapSyncMetrics::default(),
+            pending_futures: Vec::new(),
         }
     }
 
@@ -342,40 +347,31 @@ where
         }
 
         // Start real async download requests
-        // Note: In a real implementation, this would need to be handled differently
-        // since we can't use async in a sync context. This is a placeholder.
-        self.simulate_account_range_responses(requests)?;
+        self.start_real_download_requests(requests)?;
 
         self.is_downloading = true;
         Ok(())
     }
 
     /// Start real async download requests using SnapClient
-    async fn start_real_download_requests(
+    fn start_real_download_requests(
         &mut self,
         requests: Vec<(GetAccountRangeMessage, B256)>,
     ) -> Result<(), StageError> {
-        // TODO: In a real implementation, we would spawn async tasks here
-        // For now, we'll simulate the async behavior with immediate processing
-        // This is a placeholder that shows the intended architecture
-        
+        // Spawn async futures for each request
         for (request, _starting_hash) in requests {
-            // In real implementation, this would be:
-            // let response = self.snap_client.get_account_range_with_priority(request, Priority::Normal).await?;
-            // match response {
-            //     Ok(peer_response) => {
-            //         self.pending_responses.push(peer_response.result);
-            //     }
-            //     Err(e) => {
-            //         self.handle_network_error(&format!("Peer request failed: {:?}", e))?;
-            //     }
-            // }
+            // Create async future for snap client request
+            let future = self.snap_client.get_account_range_with_priority(
+                request,
+                reth_net_p2p::priority::Priority::Normal,
+            );
             
-            // For now, simulate the response
-            self.simulate_single_account_range_response(request)?;
+            // Box and pin the future for storage
+            let boxed_future = Box::pin(future);
+            self.pending_futures.push(boxed_future);
         }
 
-        self.is_downloading = false;
+        self.is_downloading = true;
         Ok(())
     }
 
@@ -498,17 +494,49 @@ where
             return Poll::Pending;
         }
 
-        // If we're not downloading and have pending responses, we're ready
-        if !self.is_downloading && !self.pending_responses.is_empty() {
+        // Poll pending async futures
+        let mut completed_futures = Vec::new();
+        for (i, future) in self.pending_futures.iter_mut().enumerate() {
+            match future.as_mut().poll(cx) {
+                Poll::Ready(Ok(peer_response)) => {
+                    // Successfully received response
+                    self.pending_responses.push(peer_response.result);
+                    self.metrics.ranges_processed += 1;
+                    completed_futures.push(i);
+                }
+                Poll::Ready(Err(e)) => {
+                    // Request failed
+                    self.metrics.failed_requests += 1;
+                    self.handle_network_error(&format!("Peer request failed: {:?}", e))?;
+                    completed_futures.push(i);
+                }
+                Poll::Pending => {
+                    // Still waiting
+                }
+            }
+        }
+
+        // Remove completed futures (in reverse order to maintain indices)
+        for &i in completed_futures.iter().rev() {
+            self.pending_futures.remove(i);
+        }
+
+        // If we have pending responses, we're ready to process them
+        if !self.pending_responses.is_empty() {
             return Poll::Ready(Ok(()));
         }
 
-        // If we're not downloading and need to start, we're ready
-        if !self.is_downloading {
+        // If we're not downloading and have no pending futures, we're ready to start
+        if !self.is_downloading && self.pending_futures.is_empty() {
             return Poll::Ready(Ok(()));
         }
 
-        Poll::Pending
+        // If we have pending futures, we're still waiting
+        if !self.pending_futures.is_empty() {
+            return Poll::Pending;
+        }
+
+        Poll::Ready(Ok(()))
     }
 
     fn execute(

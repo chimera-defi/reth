@@ -40,7 +40,7 @@ use crate::{
     stages::{
         AccountHashingStage, BodyStage, EraImportSource, EraStage, ExecutionStage, FinishStage,
         HeaderStage, IndexAccountHistoryStage, IndexStorageHistoryStage, MerkleStage,
-        PruneSenderRecoveryStage, PruneStage, SenderRecoveryStage, StorageHashingStage,
+        PruneSenderRecoveryStage, PruneStage, SenderRecoveryStage, SnapSyncStage, StorageHashingStage,
         TransactionLookupStage,
     },
     StageSet, StageSetBuilder,
@@ -375,14 +375,22 @@ where
     ExecutionStage<E>: Stage<Provider>,
 {
     fn builder(self) -> StageSetBuilder<Provider> {
-        StageSetBuilder::default()
+        let mut builder = StageSetBuilder::default();
+        
+        // TODO: Add conditional logic for snap sync
+        // When snap sync is enabled, replace SenderRecoveryStage, ExecutionStage, and PruneSenderRecoveryStage
+        // with SnapSyncStage. For now, we'll add the traditional stages.
+        
+        builder = builder
             .add_stage(SenderRecoveryStage::new(self.stages_config.sender_recovery))
             .add_stage(ExecutionStage::from_config(
                 self.evm_config,
                 self.consensus,
                 self.stages_config.execution,
                 self.stages_config.execution_external_clean_threshold(),
-            ))
+            ));
+            
+        builder
     }
 }
 
