@@ -125,6 +125,8 @@ pub struct StageConfig {
     pub index_account_history: IndexHistoryConfig,
     /// Index Storage History stage configuration.
     pub index_storage_history: IndexHistoryConfig,
+    /// Snap Sync stage configuration.
+    pub snap_sync: SnapSyncConfig,
     /// Common ETL related configuration.
     pub etl: EtlConfig,
 }
@@ -255,6 +257,38 @@ pub struct SenderRecoveryConfig {
 impl Default for SenderRecoveryConfig {
     fn default() -> Self {
         Self { commit_threshold: 5_000_000 }
+    }
+}
+
+/// Snap Sync stage configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct SnapSyncConfig {
+    /// Enable snap sync stage.
+    pub enabled: bool,
+    /// Max account ranges per execution.
+    pub max_ranges_per_execution: usize,
+    /// Max response bytes per request.
+    pub max_response_bytes: u64,
+    /// Retry attempts for failed requests.
+    pub max_retry_attempts: u32,
+    /// Timeout for peer requests (seconds).
+    pub request_timeout_seconds: u64,
+    /// Rate limit for requests per second.
+    pub requests_per_second: u32,
+}
+
+impl Default for SnapSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_ranges_per_execution: 100,
+            max_response_bytes: 2 * 1024 * 1024, // 2MB
+            max_retry_attempts: 3,
+            request_timeout_seconds: 30,
+            requests_per_second: 10,
+        }
     }
 }
 
