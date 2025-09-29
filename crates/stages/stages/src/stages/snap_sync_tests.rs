@@ -40,6 +40,7 @@ mod tests {
         }
 
         // Stub implementations for other methods (not used in our tests)
+        // Note: The trait design has all methods returning the same type, which is a limitation
         fn get_storage_ranges(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage) -> Self::Output {
             futures::future::ready(Ok(reth_net_p2p::error::WithPeerId {
                 peer_id: PeerId::random(),

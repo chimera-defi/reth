@@ -14,6 +14,26 @@ const EXTENSION: &str = "toml";
 /// The default prune block interval
 pub const DEFAULT_BLOCK_INTERVAL: usize = 5;
 
+/// Configuration for all stages in the pipeline.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct StageConfig {
+    /// Configuration for the sender recovery stage.
+    pub sender_recovery: SenderRecoveryConfig,
+    /// Configuration for the execution stage.
+    pub execution: ExecutionConfig,
+    /// Configuration for the snap sync stage.
+    pub snap_sync: SnapSyncConfig,
+}
+
+impl StageConfig {
+    /// Get the external clean threshold for execution stage.
+    pub fn execution_external_clean_threshold(&self) -> u64 {
+        self.execution.external_clean_threshold
+    }
+}
+
 /// Configuration for the reth node.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -312,6 +332,8 @@ pub struct ExecutionConfig {
         )
     )]
     pub max_duration: Option<Duration>,
+    /// External clean threshold for execution stage.
+    pub external_clean_threshold: u64,
 }
 
 impl Default for ExecutionConfig {
@@ -323,6 +345,7 @@ impl Default for ExecutionConfig {
             max_cumulative_gas: Some(30_000_000 * 50_000),
             // 10 minutes
             max_duration: Some(Duration::from_secs(10 * 60)),
+            external_clean_threshold: 100_000,
         }
     }
 }

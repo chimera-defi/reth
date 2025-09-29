@@ -5,14 +5,12 @@ use reth_db_api::{
     tables,
     transaction::{DbTx, DbTxMut},
 };
-use reth_eth_wire_types::snap::{AccountRangeMessage, AccountData, GetAccountRangeMessage};
-use reth_net_p2p::{
-    snap::SnapClient,
-    priority::Priority,
-};
+use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
+use reth_net_p2p::snap::SnapClient;
 use reth_provider::{
     DBProvider, StatsReader, HeaderProvider,
 };
+use reth_primitives_traits::Account;
 use reth_stages_api::{
     EntitiesCheckpoint, ExecInput, ExecOutput, Stage, StageCheckpoint, StageError,
     StageId, UnwindInput, UnwindOutput,
@@ -193,8 +191,8 @@ where
             B256::from([0xff; 32]), // Max hash
         );
 
-        // TODO: In real implementation, this would be async
-        // For now, we simulate with empty response
+        // Create account range request and simulate response
+        // In a real implementation, this would be handled in poll_execute_ready
         let account_ranges = vec![AccountRangeMessage {
             request_id: request.request_id,
             accounts: vec![],
