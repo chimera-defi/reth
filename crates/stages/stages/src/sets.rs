@@ -49,13 +49,14 @@ use alloy_primitives::B256;
 use reth_config::config::StageConfig;
 use reth_consensus::{ConsensusError, FullConsensus};
 use reth_evm::ConfigureEvm;
-use reth_network_p2p::{bodies::downloader::BodyDownloader, headers::downloader::HeaderDownloader};
+use reth_network_p2p::{bodies::downloader::BodyDownloader, headers::downloader::HeaderDownloader, snap::client::SnapClient};
 use reth_primitives_traits::{Block, NodePrimitives};
 use reth_provider::HeaderSyncGapProvider;
 use reth_prune_types::PruneModes;
 use reth_stages_api::Stage;
 use std::{ops::Not, sync::Arc};
 use tokio::sync::watch;
+use tracing::warn;
 
 /// A set containing all stages to run a fully syncing instance of reth.
 ///
@@ -356,7 +357,7 @@ pub struct ExecutionStages<E: ConfigureEvm> {
     /// Configuration for each stage in the pipeline
     stages_config: StageConfig,
     /// Optional snap client for snap sync (when enabled)
-    snap_client: Option<Arc<dyn reth_net_p2p::snap::SnapClient + Send + Sync + 'static>>,
+    snap_client: Option<Arc<dyn SnapClient + Send + Sync + 'static>>,
 }
 
 impl<E: ConfigureEvm> ExecutionStages<E> {
@@ -379,7 +380,7 @@ impl<E: ConfigureEvm> ExecutionStages<E> {
         executor_provider: E,
         consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
         stages_config: StageConfig,
-        snap_client: Option<Arc<dyn reth_net_p2p::snap::SnapClient + Send + Sync + 'static>>,
+        snap_client: Option<Arc<dyn SnapClient + Send + Sync + 'static>>,
     ) -> Self {
         Self { 
             evm_config: executor_provider, 
@@ -395,7 +396,7 @@ where
     E: ConfigureEvm + 'static,
     SenderRecoveryStage: Stage<Provider>,
     ExecutionStage<E>: Stage<Provider>,
-    SnapSyncStage<Arc<dyn reth_net_p2p::snap::SnapClient + Send + Sync + 'static>>: Stage<Provider>,
+    SnapSyncStage<Arc<dyn SnapClient + Send + Sync + 'static>>: Stage<Provider>,
 {
     fn builder(self) -> StageSetBuilder<Provider> {
         let mut builder = StageSetBuilder::default();

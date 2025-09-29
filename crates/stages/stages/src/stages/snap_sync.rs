@@ -5,7 +5,7 @@ use reth_db_api::{
     transaction::DbTx,
 };
 use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
-use reth_net_p2p::{snap::SnapClient, priority::Priority};
+use reth_network_p2p::{snap::client::SnapClient, priority::Priority};
 use reth_provider::{
     DBProvider, StatsReader, HeaderProvider,
 };
