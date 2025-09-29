@@ -48,6 +48,7 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
+alloy-rlp.workspace = true
 
 # async
 tokio = { workspace = true, features = ["sync"] }
