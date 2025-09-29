@@ -43,7 +43,8 @@ pub struct SnapSyncStage<C> {
     request_start_times: HashMap<u64, Instant>,
     /// Completed account ranges ready for processing
     completed_ranges: Vec<AccountRangeMessage>,
-    /// Failed requests for retry
+    /// Failed requests for retry (currently unused)
+    #[allow(dead_code)]
     failed_requests: Vec<(u64, GetAccountRangeMessage, Instant, u32)>,
 }
 
@@ -234,7 +235,8 @@ where
         // Note: Retry logic is implemented in handle_failed_request method
     }
 
-    /// Handle failed request
+    /// Handle failed request (currently unused)
+    #[allow(dead_code)]
     fn handle_failed_request(&mut self, request_id: u64, request: GetAccountRangeMessage, retry_count: u32) {
         if retry_count < self.config.max_retry_attempts {
             let retry_time = Instant::now() + Duration::from_secs(2_u64.pow(retry_count + 1)); // Exponential backoff
@@ -257,7 +259,8 @@ where
         }
     }
 
-    /// Process retry queue
+    /// Process retry queue (currently unused)
+    #[allow(dead_code)]
     fn process_retry_queue(&mut self) {
         let now = Instant::now();
         let mut retry_now = Vec::new();
