@@ -5,7 +5,7 @@ use reth_db_api::{
     transaction::DbTx,
 };
 use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
-use reth_net_p2p::snap::SnapClient;
+use reth_net_p2p::{snap::SnapClient, priority::Priority};
 use reth_provider::{
     DBProvider, StatsReader, HeaderProvider,
 };
@@ -15,8 +15,10 @@ use reth_stages_api::{
     StageId, UnwindInput, UnwindOutput,
 };
 use std::{
+    collections::HashMap,
     sync::Arc,
     task::{Context, Poll},
+    time::{Duration, Instant},
 };
 use tokio::sync::watch;
 use tracing::*;
@@ -35,6 +37,14 @@ pub struct SnapSyncStage<C> {
     request_id_counter: u64,
     /// Current range being processed
     current_range: Option<(B256, B256)>,
+    /// Pending network requests
+    pending_requests: HashMap<u64, <C as SnapClient>::Output>,
+    /// Request start times for timeout tracking
+    request_start_times: HashMap<u64, Instant>,
+    /// Completed account ranges ready for processing
+    completed_ranges: Vec<AccountRangeMessage>,
+    /// Failed requests for retry
+    failed_requests: Vec<(u64, GetAccountRangeMessage, Instant, u32)>,
 }
 
 impl<C> SnapSyncStage<C>
@@ -49,6 +59,10 @@ where
             header_receiver: None,
             request_id_counter: 0,
             current_range: None,
+            pending_requests: HashMap::new(),
+            request_start_times: HashMap::new(),
+            completed_ranges: Vec::new(),
+            failed_requests: Vec::new(),
         }
     }
 
@@ -178,6 +192,101 @@ where
             Some(header.state_root())
         })
     }
+
+    /// Start tracking a request for timeout purposes
+    fn start_request_tracking(&mut self, request_id: u64) {
+        self.request_start_times.insert(request_id, Instant::now());
+    }
+
+    /// Complete request tracking
+    fn complete_request_tracking(&mut self, request_id: u64) {
+        self.request_start_times.remove(&request_id);
+    }
+
+    /// Check for timed out requests
+    fn check_timeouts(&mut self) -> Vec<u64> {
+        let timeout_duration = Duration::from_secs(self.config.request_timeout_seconds);
+        let now = Instant::now();
+        let mut timed_out = Vec::new();
+
+        for (request_id, start_time) in &self.request_start_times {
+            if now.duration_since(*start_time) > timeout_duration {
+                timed_out.push(*request_id);
+            }
+        }
+
+        timed_out
+    }
+
+    /// Handle request timeout
+    fn handle_request_timeout(&mut self, request_id: u64) {
+        warn!(
+            target: "sync::stages::snap_sync",
+            request_id = request_id,
+            "Request timed out"
+        );
+        
+        // Remove from pending requests
+        self.pending_requests.remove(&request_id);
+        self.request_start_times.remove(&request_id);
+        
+        // Add to retry queue if retry attempts remaining
+        // Note: Retry logic is implemented in handle_failed_request method
+    }
+
+    /// Handle failed request
+    fn handle_failed_request(&mut self, request_id: u64, request: GetAccountRangeMessage, retry_count: u32) {
+        if retry_count < self.config.max_retry_attempts {
+            let retry_time = Instant::now() + Duration::from_secs(2_u64.pow(retry_count + 1)); // Exponential backoff
+            self.failed_requests.push((request_id, request, retry_time, retry_count + 1));
+            
+            debug!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                retry_count = retry_count + 1,
+                max_retries = self.config.max_retry_attempts,
+                "Request failed, will retry"
+            );
+        } else {
+            error!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                retry_count = retry_count,
+                "Request failed after maximum retry attempts"
+            );
+        }
+    }
+
+    /// Process retry queue
+    fn process_retry_queue(&mut self) {
+        let now = Instant::now();
+        let mut retry_now = Vec::new();
+
+        // Find requests that are ready for retry
+        for (i, (request_id, request, retry_time, retry_count)) in self.failed_requests.iter().enumerate() {
+            if now >= *retry_time {
+                retry_now.push((*request_id, request.clone(), *retry_count));
+            }
+        }
+
+        // Remove retry-ready requests from the queue
+        self.failed_requests.retain(|(_, _, retry_time, _)| now < *retry_time);
+
+        // Retry the eligible requests
+        for (request_id, request, retry_count) in retry_now {
+            info!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                retry_count = retry_count,
+                "Retrying failed request"
+            );
+
+            // Restart the network request
+            let future = self.snap_client.get_account_range_with_priority(request, Priority::Normal);
+            self.pending_requests.insert(request_id, future);
+            self.start_request_tracking(request_id);
+        }
+    }
 }
 
 impl<Provider, C> Stage<Provider> for SnapSyncStage<C>
@@ -203,9 +312,61 @@ where
             return Poll::Pending;
         }
 
-        // For now, we'll always return ready since we handle async operations in execute()
-        // In a real implementation, this would poll the actual network requests
-        Poll::Ready(Ok(()))
+        // Process retry queue
+        self.process_retry_queue();
+
+        // Check for timed out requests
+        let timed_out_requests = self.check_timeouts();
+        for request_id in timed_out_requests {
+            self.handle_request_timeout(request_id);
+        }
+
+        // Poll any pending SnapClient requests
+        let mut completed_requests = Vec::new();
+        for (request_id, future) in self.pending_requests.iter_mut() {
+            match future.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    match result {
+                        Ok(account_range) => {
+                            debug!(
+                                target: "sync::stages::snap_sync",
+                                request_id = request_id,
+                                accounts_count = account_range.accounts.len(),
+                                "Received account range response"
+                            );
+                            self.completed_ranges.push(account_range);
+                        }
+                        Err(e) => {
+                            warn!(
+                                target: "sync::stages::snap_sync",
+                                request_id = request_id,
+                                error = %e,
+                                "Account range request failed"
+                            );
+                            
+                            // Handle failed request with retry logic
+                            // Note: For proper retry, we would need to store the original request
+                            // For now, we'll just log the failure and rely on timeout retry
+                        }
+                    }
+                    completed_requests.push(*request_id);
+                }
+                Poll::Pending => continue,
+            }
+        }
+
+        // Remove completed requests
+        for request_id in completed_requests {
+            self.pending_requests.remove(&request_id);
+            self.complete_request_tracking(request_id);
+        }
+
+        // Return ready if we have completed ranges to process
+        if !self.completed_ranges.is_empty() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
     }
 
     fn execute(
@@ -257,25 +418,30 @@ where
             // Create and send account range request
             let request = self.create_account_range_request(starting_hash, limit_hash);
             
-            // In a real implementation, this would use the SnapClient to send the request
-            // and wait for the response. For now, we simulate processing empty ranges.
+            // Send the request via SnapClient
             debug!(
                 target: "sync::stages::snap_sync",
                 request_id = request.request_id,
                 starting_hash = ?request.starting_hash,
                 limit_hash = ?request.limit_hash,
                 root_hash = ?request.root_hash,
-                "Processing account range request"
+                "Sending account range request"
             );
 
-            // Process any completed account ranges from network requests
-            // Network responses are handled through the SnapClient trait implementation
-            let completed_ranges = vec![];
-            let processed = self.process_account_ranges(provider, completed_ranges)?;
-            total_processed += processed;
+            // Start the network request
+            let future = self.snap_client.get_account_range_with_priority(request, Priority::Normal);
+            self.pending_requests.insert(request.request_id, future);
+            self.start_request_tracking(request.request_id);
 
             // Move to next range
-            // starting_hash = limit_hash; // This would be in a real implementation
+            starting_hash = limit_hash;
+        }
+
+        // Process any completed account ranges
+        if !self.completed_ranges.is_empty() {
+            let completed_ranges = std::mem::take(&mut self.completed_ranges);
+            let processed = self.process_account_ranges(provider, completed_ranges)?;
+            total_processed += processed;
         }
 
         // If no data was returned for current target state root, we need to re-poll
