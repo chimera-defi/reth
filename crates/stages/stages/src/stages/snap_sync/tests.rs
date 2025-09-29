@@ -3,14 +3,21 @@ mod tests {
     use super::*;
     use crate::test_utils::TestStageDB;
     use alloy_primitives::B256;
-    use reth_net_p2p::{
+    use reth_network_p2p::{
         download::DownloadClient,
-        snap::SnapClient,
+        snap::client::SnapClient,
         priority::Priority,
     };
-    use reth_network_peers::PeerId;
-    use reth_primitives_traits::Header;
+    use reth_network_peers::{PeerId, WithPeerId};
+    use reth_stages_api::{ExecInput, StageId, Stage};
+    use reth_config::config::SnapSyncConfig;
+    use reth_provider::{DatabaseProviderFactory, test_utils::MockNodeTypesWithDB};
+    use crate::stages::SnapSyncStage;
     use std::sync::Arc;
+    use std::future;
+
+    /// Type alias for the provider used in tests
+    type TestProvider = reth_provider::DatabaseProvider<reth_db::mdbx::RW, MockNodeTypesWithDB>;
 
     /// Simple mock snap client for testing
     #[derive(Debug, Clone)]
@@ -22,33 +29,33 @@ mod tests {
     }
 
     impl SnapClient for MockSnapClient {
-        type Output = futures::future::Ready<reth_net_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>>;
+        type Output = future::Ready<reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>>;
         
         fn get_account_range_with_priority(
             &self,
             _request: reth_eth_wire_types::snap::GetAccountRangeMessage,
             _priority: Priority,
         ) -> Self::Output {
-            futures::future::ready(Ok(reth_net_p2p::error::WithPeerId {
-                peer_id: PeerId::random(),
-                result: reth_eth_wire_types::snap::AccountRangeMessage {
+            future::ready(Ok(WithPeerId::new(
+                PeerId::random(),
+                reth_eth_wire_types::snap::AccountRangeMessage {
                     request_id: 1,
                     accounts: vec![],
                     proof: vec![],
                 },
-            }))
+            )))
         }
 
         // Stub implementations for other methods (not used in our tests)
         fn get_storage_ranges(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage) -> Self::Output {
-            futures::future::ready(Ok(reth_net_p2p::error::WithPeerId {
-                peer_id: PeerId::random(),
-                result: reth_eth_wire_types::snap::AccountRangeMessage {
+            future::ready(Ok(WithPeerId::new(
+                PeerId::random(),
+                reth_eth_wire_types::snap::AccountRangeMessage {
                     request_id: 1,
                     accounts: vec![],
                     proof: vec![],
                 },
-            }))
+            )))
         }
 
         fn get_storage_ranges_with_priority(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage, _priority: Priority) -> Self::Output {
@@ -56,14 +63,14 @@ mod tests {
         }
 
         fn get_byte_codes(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage) -> Self::Output {
-            futures::future::ready(Ok(reth_net_p2p::error::WithPeerId {
-                peer_id: PeerId::random(),
-                result: reth_eth_wire_types::snap::AccountRangeMessage {
+            future::ready(Ok(WithPeerId::new(
+                PeerId::random(),
+                reth_eth_wire_types::snap::AccountRangeMessage {
                     request_id: 1,
                     accounts: vec![],
                     proof: vec![],
                 },
-            }))
+            )))
         }
 
         fn get_byte_codes_with_priority(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage, _priority: Priority) -> Self::Output {
@@ -71,14 +78,14 @@ mod tests {
         }
 
         fn get_trie_nodes(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage) -> Self::Output {
-            futures::future::ready(Ok(reth_net_p2p::error::WithPeerId {
-                peer_id: PeerId::random(),
-                result: reth_eth_wire_types::snap::AccountRangeMessage {
+            future::ready(Ok(WithPeerId::new(
+                PeerId::random(),
+                reth_eth_wire_types::snap::AccountRangeMessage {
                     request_id: 1,
                     accounts: vec![],
                     proof: vec![],
                 },
-            }))
+            )))
         }
 
         fn get_trie_nodes_with_priority(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage, _priority: Priority) -> Self::Output {
@@ -91,7 +98,7 @@ mod tests {
         let config = SnapSyncConfig::default();
         let snap_client = Arc::new(MockSnapClient);
         let stage = SnapSyncStage::new(config, snap_client);
-        assert_eq!(stage.id(), StageId::SnapSync);
+        assert_eq!(<SnapSyncStage<MockSnapClient> as Stage<TestProvider>>::id(&stage), StageId::SnapSync);
     }
 
     #[test]
@@ -131,7 +138,7 @@ mod tests {
         // Create a mock header with a specific state root
         let mock_header = reth_primitives_traits::SealedHeader::new(
             reth_primitives_traits::Header {
-                state_root: B256::from_low_u64_be(12345),
+                state_root: B256::from([0; 32]),
                 ..Default::default()
             },
             B256::ZERO
@@ -146,7 +153,7 @@ mod tests {
         assert!(stage.header_receiver.is_some());
         
         // Test that we can get target state root
-        assert_eq!(stage.get_target_state_root(), Some(B256::from_low_u64_be(12345)));
+        assert_eq!(stage.get_target_state_root(), Some(B256::from([0; 32])));
     }
 
     #[test]
@@ -172,7 +179,7 @@ mod tests {
         let db = TestStageDB::default();
         let provider = db.factory.database_provider_rw().unwrap();
         
-        let processed = stage.process_account_ranges(provider, vec![]).unwrap();
+        let processed = stage.process_account_ranges(vec![]).unwrap();
         assert_eq!(processed, 0);
     }
 
@@ -194,7 +201,7 @@ mod tests {
         let range_with_accounts = reth_eth_wire_types::snap::AccountRangeMessage {
             request_id: 1,
             accounts: vec![reth_eth_wire_types::snap::AccountData {
-                hash: B256::from_low_u64_be(1),
+                hash: B256::from([1; 32]),
                 body: alloy_primitives::Bytes::new(),
             }],
             proof: vec![],

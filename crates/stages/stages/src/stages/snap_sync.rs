@@ -28,6 +28,9 @@ use std::{
 use tokio::sync::watch;
 use tracing::*;
 
+#[cfg(test)]
+mod tests;
+
 /// Snap sync stage for downloading trie data ranges from peers.
 /// Replaces SenderRecoveryStage, ExecutionStage and PruneSenderRecoveryStage when enabled.
 pub struct SnapSyncStage<C: SnapClient> {
