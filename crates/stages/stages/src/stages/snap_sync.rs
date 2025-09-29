@@ -148,20 +148,54 @@ where
         Ok(processed)
     }
 
-    /// Verify account range proof (basic validation)
+    /// Verify account range proof using Merkle proof verification
     fn verify_account_range_proof(&self, account_range: &AccountRangeMessage) -> Result<bool, StageError> {
-        // TODO: Implement full Merkle proof verification using reth_trie utilities
-        // This should verify the proof against the target state root
-        // For now, we just check that the proof is present if there are accounts
-        if !account_range.accounts.is_empty() && account_range.proof.is_empty() {
-            warn!(
-                target: "sync::stages::snap_sync",
-                "Account range has accounts but no proof - proof verification needed"
-            );
+        use alloy_trie::proof::verify_proof;
+        use reth_trie_common::Nibbles;
+        
+        // If no accounts, proof should be empty or contain only empty root
+        if account_range.accounts.is_empty() {
+            return Ok(true);
         }
         
-        // TODO: Replace with actual Merkle proof verification
-        // Should use reth_trie::verify_proof or similar utilities
+        // If accounts present but no proof, this is invalid
+        if account_range.proof.is_empty() {
+            return Err(StageError::Fatal("Account range has accounts but no proof".into()));
+        }
+        
+        // Get target state root for verification
+        let target_state_root = self.get_target_state_root()
+            .ok_or_else(|| StageError::Fatal("No target state root available for proof verification".into()))?;
+        
+        // Verify each account in the range
+        for account_data in &account_range.accounts {
+            // Convert account hash to nibbles for proof verification
+            let account_nibbles = Nibbles::unpack(account_data.hash);
+            
+            // Verify the proof for this account
+            // The proof should prove the account data against the target state root
+            match verify_proof(
+                target_state_root,
+                account_nibbles,
+                Some(account_data.body.as_ref()),
+                &account_range.proof,
+            ) {
+                Ok(()) => {
+                    // Proof verification successful for this account
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        target: "sync::stages::snap_sync",
+                        account_hash = ?account_data.hash,
+                        error = %e,
+                        "Account proof verification failed"
+                    );
+                    return Err(StageError::Fatal(format!("Account proof verification failed: {}", e).into()));
+                }
+            }
+        }
+        
         Ok(true)
     }
 
