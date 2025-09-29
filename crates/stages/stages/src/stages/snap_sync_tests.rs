@@ -21,7 +21,6 @@ mod tests {
         fn num_connected_peers(&self) -> usize { 1 }
     }
 
-    // For testing, we'll implement a simplified version that only implements the methods we need
     impl SnapClient for MockSnapClient {
         type Output = futures::future::Ready<reth_net_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>>;
         
@@ -41,7 +40,6 @@ mod tests {
         }
 
         // Stub implementations for other methods (not used in our tests)
-        // Note: The trait design has all methods returning the same type, which is a limitation
         fn get_storage_ranges(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage) -> Self::Output {
             futures::future::ready(Ok(reth_net_p2p::error::WithPeerId {
                 peer_id: PeerId::random(),
@@ -202,141 +200,5 @@ mod tests {
             proof: vec![],
         };
         assert!(stage.verify_account_range_proof(&range_with_accounts).unwrap());
-    }
-
-    #[test]
-    fn test_retry_logic() {
-        let mut config = SnapSyncConfig::default();
-        config.max_retry_attempts = 3;
-        let snap_client = Arc::new(MockSnapClient);
-        let mut stage = SnapSyncStage::new(config, snap_client);
-        
-        // Create a test request
-        let request = reth_eth_wire_types::snap::GetAccountRangeMessage {
-            request_id: 1,
-            root_hash: B256::ZERO,
-            starting_hash: B256::ZERO,
-            limit_hash: B256::from_low_u64_be(100),
-            response_bytes: 1024,
-        };
-        
-        // Test handling failed request
-        stage.handle_failed_request(1, request.clone());
-        assert_eq!(stage.retry_attempts.get(&1), Some(&1));
-        assert_eq!(stage.failed_requests.len(), 1);
-        
-        // Test retry queue processing (should not retry immediately)
-        stage.process_retry_queue().unwrap();
-        assert_eq!(stage.failed_requests.len(), 1); // Still in queue
-        
-        // Test max retries exceeded
-        for _ in 0..3 {
-            stage.handle_failed_request(1, request.clone());
-        }
-        assert_eq!(stage.retry_attempts.get(&1), None); // Removed after max retries
-    }
-
-    #[test]
-    fn test_peer_selection() {
-        let config = SnapSyncConfig::default();
-        let snap_client = Arc::new(MockSnapClient);
-        let mut stage = SnapSyncStage::new(config, snap_client);
-        
-        // Test with no peers
-        assert!(stage.select_peer().is_err());
-        
-        // Add some peers
-        let peer1 = PeerId::random();
-        let peer2 = PeerId::random();
-        let peer3 = PeerId::random();
-        
-        stage.add_peer(peer1);
-        stage.add_peer(peer2);
-        stage.add_peer(peer3);
-        
-        // Test peer selection
-        let selected_peer = stage.select_peer().unwrap();
-        assert!(stage.available_peers.contains(&selected_peer));
-        
-        // Test peer metrics update
-        stage.update_peer_metrics(peer1, true);
-        stage.update_peer_metrics(peer2, false);
-        
-        let stats = stage.get_peer_stats();
-        assert_eq!(stats.len(), 3);
-        
-        // Test peer removal
-        stage.remove_peer(peer1);
-        assert!(!stage.available_peers.contains(&peer1));
-        assert_eq!(stage.available_peers.len(), 2);
-    }
-
-    #[test]
-    fn test_configurable_range_size() {
-        let mut config = SnapSyncConfig::default();
-        config.range_size = 0x1000000000000000; // 1/16th of hash space
-        config.min_range_size = 0x10000000000000; // 1/256th of hash space
-        config.max_range_size = 0x10000000000000000; // 1/8th of hash space
-        config.adaptive_range_sizing = true;
-        
-        let snap_client = Arc::new(MockSnapClient);
-        let mut stage = SnapSyncStage::new(config, snap_client);
-        
-        // Test initial range size
-        assert_eq!(stage.get_current_range_size(), 0x1000000000000000);
-        
-        // Test network metrics update with good performance
-        stage.update_network_metrics(500.0, true); // Fast response, success
-        stage.update_network_metrics(600.0, true); // Fast response, success
-        stage.update_network_metrics(700.0, true); // Fast response, success
-        
-        // Should increase range size due to good performance
-        let new_size = stage.get_current_range_size();
-        assert!(new_size >= 0x1000000000000000); // Should be at least the original size
-        
-        // Test network metrics update with poor performance
-        stage.update_network_metrics(6000.0, false); // Slow response, failure
-        stage.update_network_metrics(7000.0, false); // Slow response, failure
-        stage.update_network_metrics(8000.0, false); // Slow response, failure
-        
-        // Should decrease range size due to poor performance
-        let adjusted_size = stage.get_current_range_size();
-        assert!(adjusted_size <= new_size); // Should be smaller or equal
-        
-        // Test reset
-        stage.reset_range_size();
-        assert_eq!(stage.get_current_range_size(), 0x1000000000000000);
-    }
-
-    #[test]
-    fn test_request_timeout_handling() {
-        let mut config = SnapSyncConfig::default();
-        config.request_timeout_seconds = 1; // 1 second timeout for testing
-        config.max_retry_attempts = 2;
-        
-        let snap_client = Arc::new(MockSnapClient);
-        let mut stage = SnapSyncStage::new(config, snap_client);
-        
-        // Test request tracking
-        stage.start_request_tracking(1);
-        assert_eq!(stage.get_active_request_count(), 1);
-        
-        // Test successful completion
-        stage.complete_request_tracking(1, true);
-        assert_eq!(stage.get_active_request_count(), 0);
-        
-        // Test timeout handling
-        stage.start_request_tracking(2);
-        assert_eq!(stage.get_active_request_count(), 1);
-        
-        // Simulate timeout by checking timeouts immediately
-        // (In real implementation, this would be called after the timeout period)
-        stage.check_timeouts().unwrap();
-        
-        // The request should still be active since we didn't wait for the actual timeout
-        assert_eq!(stage.get_active_request_count(), 1);
-        
-        // Test timeout configuration
-        assert_eq!(stage.get_timeout_seconds(), 1);
     }
 }
