@@ -297,6 +297,15 @@ pub struct SnapSyncConfig {
     pub request_timeout_seconds: u64,
     /// Rate limit for requests per second.
     pub requests_per_second: u32,
+    /// Range size for account hash ranges (in hash space units).
+    /// Larger values = fewer requests but more data per request.
+    pub range_size: u64,
+    /// Minimum range size (for poor network conditions).
+    pub min_range_size: u64,
+    /// Maximum range size (for good network conditions).
+    pub max_range_size: u64,
+    /// Adaptive range sizing based on network performance.
+    pub adaptive_range_sizing: bool,
 }
 
 impl Default for SnapSyncConfig {
@@ -308,6 +317,10 @@ impl Default for SnapSyncConfig {
             max_retry_attempts: 3,
             request_timeout_seconds: 30,
             requests_per_second: 10,
+            range_size: 0x1000000000000000, // 1/16th of hash space (default)
+            min_range_size: 0x10000000000000, // 1/256th of hash space (min)
+            max_range_size: 0x10000000000000000, // 1/8th of hash space (max)
+            adaptive_range_sizing: true,
         }
     }
 }

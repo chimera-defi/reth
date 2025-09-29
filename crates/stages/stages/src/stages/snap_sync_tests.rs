@@ -270,4 +270,73 @@ mod tests {
         assert!(!stage.available_peers.contains(&peer1));
         assert_eq!(stage.available_peers.len(), 2);
     }
+
+    #[test]
+    fn test_configurable_range_size() {
+        let mut config = SnapSyncConfig::default();
+        config.range_size = 0x1000000000000000; // 1/16th of hash space
+        config.min_range_size = 0x10000000000000; // 1/256th of hash space
+        config.max_range_size = 0x10000000000000000; // 1/8th of hash space
+        config.adaptive_range_sizing = true;
+        
+        let snap_client = Arc::new(MockSnapClient);
+        let mut stage = SnapSyncStage::new(config, snap_client);
+        
+        // Test initial range size
+        assert_eq!(stage.get_current_range_size(), 0x1000000000000000);
+        
+        // Test network metrics update with good performance
+        stage.update_network_metrics(500.0, true); // Fast response, success
+        stage.update_network_metrics(600.0, true); // Fast response, success
+        stage.update_network_metrics(700.0, true); // Fast response, success
+        
+        // Should increase range size due to good performance
+        let new_size = stage.get_current_range_size();
+        assert!(new_size >= 0x1000000000000000); // Should be at least the original size
+        
+        // Test network metrics update with poor performance
+        stage.update_network_metrics(6000.0, false); // Slow response, failure
+        stage.update_network_metrics(7000.0, false); // Slow response, failure
+        stage.update_network_metrics(8000.0, false); // Slow response, failure
+        
+        // Should decrease range size due to poor performance
+        let adjusted_size = stage.get_current_range_size();
+        assert!(adjusted_size <= new_size); // Should be smaller or equal
+        
+        // Test reset
+        stage.reset_range_size();
+        assert_eq!(stage.get_current_range_size(), 0x1000000000000000);
+    }
+
+    #[test]
+    fn test_request_timeout_handling() {
+        let mut config = SnapSyncConfig::default();
+        config.request_timeout_seconds = 1; // 1 second timeout for testing
+        config.max_retry_attempts = 2;
+        
+        let snap_client = Arc::new(MockSnapClient);
+        let mut stage = SnapSyncStage::new(config, snap_client);
+        
+        // Test request tracking
+        stage.start_request_tracking(1);
+        assert_eq!(stage.get_active_request_count(), 1);
+        
+        // Test successful completion
+        stage.complete_request_tracking(1, true);
+        assert_eq!(stage.get_active_request_count(), 0);
+        
+        // Test timeout handling
+        stage.start_request_tracking(2);
+        assert_eq!(stage.get_active_request_count(), 1);
+        
+        // Simulate timeout by checking timeouts immediately
+        // (In real implementation, this would be called after the timeout period)
+        stage.check_timeouts().unwrap();
+        
+        // The request should still be active since we didn't wait for the actual timeout
+        assert_eq!(stage.get_active_request_count(), 1);
+        
+        // Test timeout configuration
+        assert_eq!(stage.get_timeout_seconds(), 1);
+    }
 }

@@ -25,6 +25,17 @@ use std::{
 use tokio::sync::watch;
 use tracing::*;
 
+/// Network performance metrics for adaptive range sizing
+#[derive(Debug, Clone, Default)]
+struct NetworkMetrics {
+    /// Average response time in milliseconds
+    avg_response_time_ms: f64,
+    /// Success rate (0.0 to 1.0)
+    success_rate: f64,
+    /// Number of samples for moving average
+    sample_count: u32,
+}
+
 /// Snap sync stage for downloading trie data ranges from peers.
 /// Replaces SenderRecoveryStage, ExecutionStage and PruneSenderRecoveryStage when enabled.
 #[derive(Debug)]
@@ -47,6 +58,12 @@ pub struct SnapSyncStage<C> {
     available_peers: Vec<reth_network_peers::PeerId>,
     /// Peer performance metrics (peer_id -> success_rate)
     peer_metrics: HashMap<reth_network_peers::PeerId, f64>,
+    /// Current adaptive range size
+    current_range_size: u64,
+    /// Network performance metrics for adaptive sizing
+    network_metrics: NetworkMetrics,
+    /// Active requests with their start times for timeout tracking
+    active_requests: HashMap<u64, Instant>,
 }
 
 impl<C> SnapSyncStage<C>
@@ -65,6 +82,9 @@ where
             failed_requests: Vec::new(),
             available_peers: Vec::new(),
             peer_metrics: HashMap::new(),
+            current_range_size: config.range_size,
+            network_metrics: NetworkMetrics::default(),
+            active_requests: HashMap::new(),
         }
     }
 
@@ -362,6 +382,167 @@ where
             .map(|(&peer_id, &rate)| (peer_id, rate))
             .collect()
     }
+
+    /// Update network metrics based on request performance
+    pub fn update_network_metrics(&mut self, response_time_ms: f64, success: bool) {
+        // Update response time with exponential moving average
+        let alpha = 0.1; // Smoothing factor
+        self.network_metrics.avg_response_time_ms = 
+            alpha * response_time_ms + (1.0 - alpha) * self.network_metrics.avg_response_time_ms;
+        
+        // Update success rate with exponential moving average
+        let success_value = if success { 1.0 } else { 0.0 };
+        self.network_metrics.success_rate = 
+            alpha * success_value + (1.0 - alpha) * self.network_metrics.success_rate;
+        
+        self.network_metrics.sample_count += 1;
+        
+        // Adaptive range sizing based on network performance
+        if self.config.adaptive_range_sizing {
+            self.adjust_range_size();
+        }
+        
+        debug!(
+            target: "sync::stages::snap_sync",
+            response_time_ms = response_time_ms,
+            success = success,
+            avg_response_time_ms = self.network_metrics.avg_response_time_ms,
+            success_rate = self.network_metrics.success_rate,
+            current_range_size = self.current_range_size,
+            "Updated network metrics"
+        );
+    }
+
+    /// Adjust range size based on network performance
+    fn adjust_range_size(&mut self) {
+        let old_size = self.current_range_size;
+        
+        // Adjust based on success rate and response time
+        if self.network_metrics.success_rate > 0.9 && self.network_metrics.avg_response_time_ms < 1000.0 {
+            // Good performance: increase range size
+            self.current_range_size = (self.current_range_size * 2).min(self.config.max_range_size);
+        } else if self.network_metrics.success_rate < 0.7 || self.network_metrics.avg_response_time_ms > 5000.0 {
+            // Poor performance: decrease range size
+            self.current_range_size = (self.current_range_size / 2).max(self.config.min_range_size);
+        }
+        
+        if old_size != self.current_range_size {
+            info!(
+                target: "sync::stages::snap_sync",
+                old_size = old_size,
+                new_size = self.current_range_size,
+                success_rate = self.network_metrics.success_rate,
+                avg_response_time_ms = self.network_metrics.avg_response_time_ms,
+                "Adjusted range size based on network performance"
+            );
+        }
+    }
+
+    /// Get current range size
+    pub fn get_current_range_size(&self) -> u64 {
+        self.current_range_size
+    }
+
+    /// Reset range size to default
+    pub fn reset_range_size(&mut self) {
+        self.current_range_size = self.config.range_size;
+        self.network_metrics = NetworkMetrics::default();
+        
+        info!(
+            target: "sync::stages::snap_sync",
+            range_size = self.current_range_size,
+            "Reset range size to default"
+        );
+    }
+
+    /// Start tracking a request for timeout purposes
+    pub fn start_request_tracking(&mut self, request_id: u64) {
+        self.active_requests.insert(request_id, Instant::now());
+        
+        debug!(
+            target: "sync::stages::snap_sync",
+            request_id = request_id,
+            timeout_seconds = self.config.request_timeout_seconds,
+            "Started tracking request for timeout"
+        );
+    }
+
+    /// Complete request tracking and update metrics
+    pub fn complete_request_tracking(&mut self, request_id: u64, success: bool) {
+        if let Some(start_time) = self.active_requests.remove(&request_id) {
+            let response_time = start_time.elapsed();
+            let response_time_ms = response_time.as_millis() as f64;
+            
+            // Update network metrics
+            self.update_network_metrics(response_time_ms, success);
+            
+            debug!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                response_time_ms = response_time_ms,
+                success = success,
+                "Completed request tracking"
+            );
+        }
+    }
+
+    /// Check for timed out requests and handle them
+    pub fn check_timeouts(&mut self) -> Result<(), StageError> {
+        let now = Instant::now();
+        let timeout_duration = Duration::from_secs(self.config.request_timeout_seconds);
+        let mut timed_out_requests = Vec::new();
+        
+        // Find timed out requests
+        for (&request_id, &start_time) in &self.active_requests {
+            if now.duration_since(start_time) > timeout_duration {
+                timed_out_requests.push(request_id);
+            }
+        }
+        
+        // Handle timed out requests
+        for request_id in timed_out_requests {
+            self.handle_request_timeout(request_id);
+        }
+        
+        Ok(())
+    }
+
+    /// Handle a timed out request
+    fn handle_request_timeout(&mut self, request_id: u64) {
+        self.active_requests.remove(&request_id);
+        
+        warn!(
+            target: "sync::stages::snap_sync",
+            request_id = request_id,
+            timeout_seconds = self.config.request_timeout_seconds,
+            "Request timed out"
+        );
+        
+        // Update network metrics for timeout (treated as failure)
+        self.update_network_metrics(self.config.request_timeout_seconds as f64 * 1000.0, false);
+        
+        // Create a dummy request for retry logic
+        let dummy_request = GetAccountRangeMessage {
+            request_id,
+            root_hash: B256::ZERO,
+            starting_hash: B256::ZERO,
+            limit_hash: B256::ZERO,
+            response_bytes: self.config.max_response_bytes,
+        };
+        
+        // Handle as failed request for retry logic
+        self.handle_failed_request(request_id, dummy_request);
+    }
+
+    /// Get active request count
+    pub fn get_active_request_count(&self) -> usize {
+        self.active_requests.len()
+    }
+
+    /// Get timeout configuration
+    pub fn get_timeout_seconds(&self) -> u64 {
+        self.config.request_timeout_seconds
+    }
 }
 
 impl<Provider, C> Stage<Provider> for SnapSyncStage<C>
@@ -426,6 +607,9 @@ where
 
         // Process retry queue first
         self.process_retry_queue()?;
+        
+        // Check for timed out requests
+        self.check_timeouts()?;
 
         // Process multiple ranges per execution (configurable)
         for _ in 0..self.config.max_ranges_per_execution {
@@ -433,9 +617,8 @@ where
                 break;
             }
 
-            // Calculate the range for this request
-            // TODO: Make range size configurable and optimize based on network conditions
-            let range_size = B256::from_low_u64_be(0x1000000000000000u64); // 1/16th of hash space
+            // Calculate the range for this request using configurable range size
+            let range_size = B256::from_low_u64_be(self.current_range_size);
             let limit_hash = if starting_hash.saturating_add(range_size) >= max_hash {
                 max_hash
             } else {
