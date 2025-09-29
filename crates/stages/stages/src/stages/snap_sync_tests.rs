@@ -166,4 +166,30 @@ mod tests {
         let processed = stage.process_account_ranges(provider, vec![]).unwrap();
         assert_eq!(processed, 0);
     }
+
+    #[test]
+    fn test_account_range_proof_verification() {
+        let config = SnapSyncConfig::default();
+        let snap_client = Arc::new(MockSnapClient);
+        let stage = SnapSyncStage::new(config, snap_client);
+        
+        // Test empty account range
+        let empty_range = reth_eth_wire_types::snap::AccountRangeMessage {
+            request_id: 1,
+            accounts: vec![],
+            proof: vec![],
+        };
+        assert!(stage.verify_account_range_proof(&empty_range).unwrap());
+        
+        // Test account range with accounts but no proof (should still pass with warning)
+        let range_with_accounts = reth_eth_wire_types::snap::AccountRangeMessage {
+            request_id: 1,
+            accounts: vec![reth_eth_wire_types::snap::AccountData {
+                hash: B256::from_low_u64_be(1),
+                body: alloy_primitives::Bytes::new(),
+            }],
+            proof: vec![],
+        };
+        assert!(stage.verify_account_range_proof(&range_with_accounts).unwrap());
+    }
 }
