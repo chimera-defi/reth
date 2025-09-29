@@ -19,9 +19,11 @@ use reth_stages_api::{
     StageId, UnwindInput, UnwindOutput,
 };
 use std::{
+    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
+use futures::Future;
 use tokio::sync::watch;
 use tracing::*;
 
@@ -37,6 +39,12 @@ pub struct SnapSyncStage<C> {
     header_receiver: Option<watch::Receiver<B256>>,
     /// Request ID counter for snap requests
     request_id_counter: u64,
+    /// Pending network requests
+    pending_requests: Vec<Pin<Box<dyn Future<Output = Result<AccountRangeMessage, StageError>> + Send + 'static>>>,
+    /// Completed account ranges ready for processing
+    completed_ranges: Vec<AccountRangeMessage>,
+    /// Current range being processed
+    current_range: Option<(B256, B256)>,
 }
 
 impl<C> SnapSyncStage<C>
@@ -50,6 +58,9 @@ where
             snap_client,
             header_receiver: None,
             request_id_counter: 0,
+            pending_requests: Vec::new(),
+            completed_ranges: Vec::new(),
+            current_range: None,
         }
     }
 
@@ -84,6 +95,7 @@ where
         self.request_id_counter += 1;
         GetAccountRangeMessage {
             request_id: self.request_id_counter,
+            root_hash: self.get_target_state_root().unwrap_or(B256::ZERO), // TODO: Use actual state root
             starting_hash,
             limit_hash,
             response_bytes: self.config.max_response_bytes,
@@ -138,40 +150,50 @@ where
 
     /// Verify account range proof (basic validation)
     fn verify_account_range_proof(&self, account_range: &AccountRangeMessage) -> Result<bool, StageError> {
-        // Basic proof validation - in a real implementation, this would verify Merkle proofs
+        // TODO: Implement full Merkle proof verification using reth_trie utilities
+        // This should verify the proof against the target state root
         // For now, we just check that the proof is present if there are accounts
         if !account_range.accounts.is_empty() && account_range.proof.is_empty() {
-            // Allow empty proofs for testing, but log a warning
             warn!(
                 target: "sync::stages::snap_sync",
-                "Account range has accounts but no proof - this should be verified in production"
+                "Account range has accounts but no proof - proof verification needed"
             );
         }
         
-        // For now, always return true - real implementation would verify Merkle proofs
-        // against the target state root using reth_trie utilities
+        // TODO: Replace with actual Merkle proof verification
+        // Should use reth_trie::verify_proof or similar utilities
         Ok(true)
     }
 
     /// Get current target state root from header receiver
     pub fn get_target_state_root(&self) -> Option<B256> {
+        // TODO: Extract actual state root from header instead of using header hash
+        // The header receiver should provide the actual state root, not just the header hash
         self.header_receiver.as_ref().and_then(|receiver| receiver.borrow().clone())
     }
 
-    /// Make a network request for account range (blocking for now)
-    fn request_account_range(&self, starting_hash: B256, limit_hash: B256) -> Result<AccountRangeMessage, StageError> {
+    /// Start a network request for account range
+    fn start_account_range_request(&mut self, starting_hash: B256, limit_hash: B256) -> Result<(), StageError> {
         let request = self.create_account_range_request(starting_hash, limit_hash);
         
-        // In a real implementation, this would use tokio::task::block_in_place
-        // or be handled in poll_execute_ready with proper async state management
-        // For now, we simulate the network request with empty data
-        // This maintains the algorithm structure while being realistic about the architecture
+        // Create the actual network request using SnapClient
+        let snap_client = Arc::clone(&self.snap_client);
+        let future = async move {
+            // TODO: Implement peer selection strategy
+            // Should select the best available peer for the request
+            match snap_client.get_account_range_with_priority(request, Priority::Normal).await {
+                Ok(response) => Ok(response.result),
+                Err(e) => {
+                    // TODO: Implement retry logic with exponential backoff
+                    // Should retry failed requests up to max_retry_attempts times
+                    Err(StageError::Fatal(format!("Network request failed: {}", e).into()))
+                }
+            }
+        };
         
-        Ok(AccountRangeMessage {
-            request_id: request.request_id,
-            accounts: vec![], // Would contain actual account data from peers
-            proof: vec![],    // Would contain Merkle proof data
-        })
+        self.pending_requests.push(Box::pin(future));
+        self.current_range = Some((starting_hash, limit_hash));
+        Ok(())
     }
 }
 
@@ -186,7 +208,7 @@ where
 
     fn poll_execute_ready(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
         _input: ExecInput,
     ) -> Poll<Result<(), StageError>> {
         if !self.config.enabled {
@@ -198,8 +220,40 @@ where
             return Poll::Pending;
         }
 
-        // Ready to execute - network requests are handled synchronously in execute
-        // In a real implementation, this would manage async state and pending requests
+        // Poll pending network requests
+        let mut completed_requests = Vec::new();
+        for (i, future) in self.pending_requests.iter_mut().enumerate() {
+            match future.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    completed_requests.push((i, result));
+                }
+                Poll::Pending => continue,
+            }
+        }
+
+        // Process completed requests
+        for (i, result) in completed_requests.iter().rev() {
+            match result {
+                Ok(account_range) => {
+                    self.completed_ranges.push(account_range.clone());
+                }
+                Err(e) => {
+                    warn!(
+                        target: "sync::stages::snap_sync",
+                        error = %e,
+                        "Failed to get account range from peer"
+                    );
+                }
+            }
+            self.pending_requests.remove(*i);
+        }
+
+        // If we have pending requests, continue polling
+        if !self.pending_requests.is_empty() {
+            return Poll::Pending;
+        }
+
+        // Ready to execute when no pending requests
         Poll::Ready(Ok(()))
     }
 
@@ -236,13 +290,13 @@ where
         let max_hash = B256::from([0xff; 32]);
 
         // Process multiple ranges per execution (configurable)
-        let mut account_ranges = Vec::new();
         for _ in 0..self.config.max_ranges_per_execution {
             if starting_hash >= max_hash {
                 break;
             }
 
             // Calculate the range for this request
+            // TODO: Make range size configurable and optimize based on network conditions
             let range_size = B256::from_low_u64_be(0x1000000000000000u64); // 1/16th of hash space
             let limit_hash = if starting_hash.saturating_add(range_size) >= max_hash {
                 max_hash
@@ -250,16 +304,16 @@ where
                 starting_hash.saturating_add(range_size)
             };
 
-            // Make network request for this range
-            let account_range = self.request_account_range(starting_hash, limit_hash)?;
-            account_ranges.push(account_range);
+            // Start network request for this range
+            self.start_account_range_request(starting_hash, limit_hash)?;
 
             // Move to next range
             starting_hash = limit_hash;
         }
 
-        // Process all received account ranges
-        if !account_ranges.is_empty() {
+        // Process completed account ranges
+        if !self.completed_ranges.is_empty() {
+            let account_ranges = std::mem::take(&mut self.completed_ranges);
             let processed = self.process_account_ranges(provider, account_ranges)?;
             total_processed += processed;
 
