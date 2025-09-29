@@ -415,20 +415,20 @@ where
                 starting_hash.saturating_add(range_size)
             };
 
-            // Create and send account range request
+            // Create account range request
             let request = self.create_account_range_request(starting_hash, limit_hash);
             
-            // Send the request via SnapClient
+            // Create and queue the network request
             debug!(
                 target: "sync::stages::snap_sync",
                 request_id = request.request_id,
                 starting_hash = ?request.starting_hash,
                 limit_hash = ?request.limit_hash,
                 root_hash = ?request.root_hash,
-                "Sending account range request"
+                "Creating account range request"
             );
 
-            // Start the network request
+            // Create the network request future and queue it for polling
             let future = self.snap_client.get_account_range_with_priority(request, Priority::Normal);
             self.pending_requests.insert(request.request_id, future);
             self.start_request_tracking(request.request_id);
