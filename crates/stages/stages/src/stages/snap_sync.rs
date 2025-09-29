@@ -7,17 +7,20 @@ use reth_db_api::{
 };
 use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
 use reth_net_p2p::snap::SnapClient;
+use reth_network_peers::PeerId;
 use reth_provider::{
     DBProvider, StatsReader, HeaderProvider,
 };
-use reth_primitives_traits::Account;
+use reth_primitives_traits::{Account, SealedHeader};
 use reth_stages_api::{
     EntitiesCheckpoint, ExecInput, ExecOutput, Stage, StageCheckpoint, StageError,
     StageId, UnwindInput, UnwindOutput,
 };
 use std::{
+    collections::HashMap,
     sync::Arc,
     task::{Context, Poll},
+    time::{Duration, Instant},
 };
 use tokio::sync::watch;
 use tracing::*;
@@ -31,11 +34,19 @@ pub struct SnapSyncStage<C> {
     /// Snap client for peer communication
     snap_client: Arc<C>,
     /// Watch receiver for header updates from consensus engine
-    header_receiver: Option<watch::Receiver<B256>>,
+    header_receiver: Option<watch::Receiver<SealedHeader>>,
     /// Request ID counter for snap requests
     request_id_counter: u64,
     /// Current range being processed
     current_range: Option<(B256, B256)>,
+    /// Retry attempts for failed requests (request_id -> attempts)
+    retry_attempts: std::collections::HashMap<u64, u32>,
+    /// Failed requests waiting for retry
+    failed_requests: Vec<(u64, GetAccountRangeMessage, std::time::Instant)>,
+    /// Available peers for snap sync requests
+    available_peers: Vec<reth_network_peers::PeerId>,
+    /// Peer performance metrics (peer_id -> success_rate)
+    peer_metrics: HashMap<reth_network_peers::PeerId, f64>,
 }
 
 impl<C> SnapSyncStage<C>
@@ -50,11 +61,15 @@ where
             header_receiver: None,
             request_id_counter: 0,
             current_range: None,
+            retry_attempts: HashMap::new(),
+            failed_requests: Vec::new(),
+            available_peers: Vec::new(),
+            peer_metrics: HashMap::new(),
         }
     }
 
     /// Set the header receiver for consensus engine updates
-    pub fn with_header_receiver(mut self, receiver: watch::Receiver<B256>) -> Self {
+    pub fn with_header_receiver(mut self, receiver: watch::Receiver<SealedHeader>) -> Self {
         self.header_receiver = Some(receiver);
         self
     }
@@ -190,10 +205,11 @@ where
 
     /// Get current target state root from header receiver
     pub fn get_target_state_root(&self) -> Option<B256> {
-        // The header receiver provides the latest header hash, but we need the state root
-        // For now, we'll use the header hash as a placeholder until we can access the actual header
-        // In a real implementation, the header receiver should provide the actual header with state_root()
-        self.header_receiver.as_ref().and_then(|receiver| receiver.borrow().clone())
+        // Extract the actual state root from the latest header
+        self.header_receiver.as_ref().and_then(|receiver| {
+            let header = receiver.borrow();
+            Some(header.state_root())
+        })
     }
 
     /// Start a network request for account range
@@ -202,6 +218,149 @@ where
         // In a real implementation, this would start the actual network request
         self.current_range = Some((starting_hash, limit_hash));
         Ok(())
+    }
+
+    /// Handle a failed network request with retry logic
+    pub fn handle_failed_request(&mut self, request_id: u64, request: GetAccountRangeMessage) {
+        let attempts = self.retry_attempts.get(&request_id).copied().unwrap_or(0);
+        
+        if attempts < self.config.max_retry_attempts {
+            // Add to retry queue with exponential backoff delay
+            let delay = Duration::from_millis(1000 * 2_u64.pow(attempts)); // 1s, 2s, 4s, 8s...
+            let retry_time = Instant::now() + delay;
+            
+            self.failed_requests.push((request_id, request, retry_time));
+            self.retry_attempts.insert(request_id, attempts + 1);
+            
+            warn!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                attempts = attempts + 1,
+                max_attempts = self.config.max_retry_attempts,
+                retry_delay_ms = delay.as_millis(),
+                "Request failed, scheduling retry"
+            );
+        } else {
+            // Max retries exceeded, give up
+            error!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                attempts = attempts,
+                "Request failed after max retries, giving up"
+            );
+            
+            self.retry_attempts.remove(&request_id);
+        }
+    }
+
+    /// Process retry queue and retry eligible requests
+    pub fn process_retry_queue(&mut self) -> Result<(), StageError> {
+        let now = Instant::now();
+        let mut retry_now = Vec::new();
+        
+        // Find requests that are ready for retry
+        for (i, (request_id, request, retry_time)) in self.failed_requests.iter().enumerate() {
+            if now >= *retry_time {
+                retry_now.push((*request_id, request.clone()));
+            }
+        }
+        
+        // Remove retry-ready requests from the queue
+        self.failed_requests.retain(|(_, _, retry_time)| now < *retry_time);
+        
+        // Retry the eligible requests
+        for (request_id, request) in retry_now {
+            info!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                "Retrying failed request"
+            );
+            
+            // In a real implementation, this would restart the network request
+            // For now, we'll just log the retry
+            debug!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                starting_hash = ?request.starting_hash,
+                limit_hash = ?request.limit_hash,
+                "Retrying account range request"
+            );
+        }
+        
+        Ok(())
+    }
+
+    /// Select the best available peer for a snap sync request
+    pub fn select_peer(&self) -> Result<PeerId, StageError> {
+        if self.available_peers.is_empty() {
+            return Err(StageError::Fatal("No available peers for snap sync".into()));
+        }
+
+        // Select peer with highest success rate, or random if no metrics
+        let best_peer = self.available_peers
+            .iter()
+            .max_by(|a, b| {
+                let a_rate = self.peer_metrics.get(a).copied().unwrap_or(0.5);
+                let b_rate = self.peer_metrics.get(b).copied().unwrap_or(0.5);
+                a_rate.partial_cmp(&b_rate).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .ok_or_else(|| StageError::Fatal("No peers available".into()))?;
+
+        Ok(*best_peer)
+    }
+
+    /// Update peer metrics based on request success/failure
+    pub fn update_peer_metrics(&mut self, peer_id: PeerId, success: bool) {
+        let current_rate = self.peer_metrics.get(&peer_id).copied().unwrap_or(0.5);
+        
+        // Simple exponential moving average: new_rate = 0.9 * old_rate + 0.1 * (success ? 1.0 : 0.0)
+        let new_rate = 0.9 * current_rate + 0.1 * if success { 1.0 } else { 0.0 };
+        
+        self.peer_metrics.insert(peer_id, new_rate);
+        
+        debug!(
+            target: "sync::stages::snap_sync",
+            peer_id = %peer_id,
+            success = success,
+            new_rate = new_rate,
+            "Updated peer metrics"
+        );
+    }
+
+    /// Add a peer to the available peers list
+    pub fn add_peer(&mut self, peer_id: PeerId) {
+        if !self.available_peers.contains(&peer_id) {
+            self.available_peers.push(peer_id);
+            self.peer_metrics.insert(peer_id, 0.5); // Start with neutral rating
+            
+            info!(
+                target: "sync::stages::snap_sync",
+                peer_id = %peer_id,
+                total_peers = self.available_peers.len(),
+                "Added new peer for snap sync"
+            );
+        }
+    }
+
+    /// Remove a peer from the available peers list
+    pub fn remove_peer(&mut self, peer_id: PeerId) {
+        self.available_peers.retain(|&p| p != peer_id);
+        self.peer_metrics.remove(&peer_id);
+        
+        warn!(
+            target: "sync::stages::snap_sync",
+            peer_id = %peer_id,
+            remaining_peers = self.available_peers.len(),
+            "Removed peer from snap sync"
+        );
+    }
+
+    /// Get peer performance statistics
+    pub fn get_peer_stats(&self) -> Vec<(PeerId, f64)> {
+        self.peer_metrics
+            .iter()
+            .map(|(&peer_id, &rate)| (peer_id, rate))
+            .collect()
     }
 }
 
@@ -264,6 +423,9 @@ where
 
         let mut total_processed = 0;
         let max_hash = B256::from([0xff; 32]);
+
+        // Process retry queue first
+        self.process_retry_queue()?;
 
         // Process multiple ranges per execution (configurable)
         for _ in 0..self.config.max_ranges_per_execution {
