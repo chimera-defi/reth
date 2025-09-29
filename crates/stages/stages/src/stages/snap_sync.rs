@@ -43,9 +43,6 @@ pub struct SnapSyncStage<C> {
     request_start_times: HashMap<u64, Instant>,
     /// Completed account ranges ready for processing
     completed_ranges: Vec<AccountRangeMessage>,
-    /// Failed requests for retry (currently unused)
-    #[allow(dead_code)]
-    failed_requests: Vec<(u64, GetAccountRangeMessage, Instant, u32)>,
 }
 
 impl<C> SnapSyncStage<C>
@@ -63,7 +60,6 @@ where
             pending_requests: HashMap::new(),
             request_start_times: HashMap::new(),
             completed_ranges: Vec::new(),
-            failed_requests: Vec::new(),
         }
     }
 
@@ -231,65 +227,9 @@ where
         self.pending_requests.remove(&request_id);
         self.request_start_times.remove(&request_id);
         
-        // Add to retry queue if retry attempts remaining
-        // Note: Retry logic is implemented in handle_failed_request method
+        // Note: Retry logic could be implemented here if needed
     }
 
-    /// Handle failed request (currently unused)
-    #[allow(dead_code)]
-    fn handle_failed_request(&mut self, request_id: u64, request: GetAccountRangeMessage, retry_count: u32) {
-        if retry_count < self.config.max_retry_attempts {
-            let retry_time = Instant::now() + Duration::from_secs(2_u64.pow(retry_count + 1)); // Exponential backoff
-            self.failed_requests.push((request_id, request, retry_time, retry_count + 1));
-            
-            debug!(
-                target: "sync::stages::snap_sync",
-                request_id = request_id,
-                retry_count = retry_count + 1,
-                max_retries = self.config.max_retry_attempts,
-                "Request failed, will retry"
-            );
-        } else {
-            error!(
-                target: "sync::stages::snap_sync",
-                request_id = request_id,
-                retry_count = retry_count,
-                "Request failed after maximum retry attempts"
-            );
-        }
-    }
-
-    /// Process retry queue (currently unused)
-    #[allow(dead_code)]
-    fn process_retry_queue(&mut self) {
-        let now = Instant::now();
-        let mut retry_now = Vec::new();
-
-        // Find requests that are ready for retry
-        for (i, (request_id, request, retry_time, retry_count)) in self.failed_requests.iter().enumerate() {
-            if now >= *retry_time {
-                retry_now.push((*request_id, request.clone(), *retry_count));
-            }
-        }
-
-        // Remove retry-ready requests from the queue
-        self.failed_requests.retain(|(_, _, retry_time, _)| now < *retry_time);
-
-        // Retry the eligible requests
-        for (request_id, request, retry_count) in retry_now {
-            info!(
-                target: "sync::stages::snap_sync",
-                request_id = request_id,
-                retry_count = retry_count,
-                "Retrying failed request"
-            );
-
-            // Restart the network request
-            let future = self.snap_client.get_account_range_with_priority(request, Priority::Normal);
-            self.pending_requests.insert(request_id, future);
-            self.start_request_tracking(request_id);
-        }
-    }
 }
 
 impl<Provider, C> Stage<Provider> for SnapSyncStage<C>
@@ -315,8 +255,6 @@ where
             return Poll::Pending;
         }
 
-        // Process retry queue
-        self.process_retry_queue();
 
         // Check for timed out requests
         let timed_out_requests = self.check_timeouts();

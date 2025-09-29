@@ -291,8 +291,6 @@ pub struct SnapSyncConfig {
     pub max_ranges_per_execution: usize,
     /// Max response bytes per request.
     pub max_response_bytes: u64,
-    /// Retry attempts for failed requests.
-    pub max_retry_attempts: u32,
     /// Timeout for peer requests (seconds).
     pub request_timeout_seconds: u64,
     /// Range size for account hash ranges (in hash space units).
@@ -306,7 +304,6 @@ impl Default for SnapSyncConfig {
             enabled: false,
             max_ranges_per_execution: 100,
             max_response_bytes: 2 * 1024 * 1024, // 2MB
-            max_retry_attempts: 3,
             request_timeout_seconds: 30,
             range_size: 0x1000000000000000, // 1/16th of hash space (default)
         }
