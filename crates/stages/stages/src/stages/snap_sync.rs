@@ -1,7 +1,6 @@
 use alloy_primitives::B256;
 use reth_config::config::SnapSyncConfig;
 use reth_db_api::{
-    cursor::DbCursorRW,
     tables,
     transaction::DbTx,
 };
