@@ -29,7 +29,7 @@ use tokio::sync::watch;
 use tracing::*;
 
 /// Snap sync stage for downloading trie data ranges from peers.
-/// Replaces SenderRecoveryStage, ExecutionStage and PruneSenderRecoveryStage when enabled.
+/// Replaces `SenderRecoveryStage`, `ExecutionStage` and `PruneSenderRecoveryStage` when enabled.
 pub struct SnapSyncStage<C: SnapClient> {
     /// Configuration for the stage
     pub config: SnapSyncConfig,
@@ -71,7 +71,7 @@ impl<C> SnapSyncStage<C>
 where
     C: SnapClient + Send + Sync + 'static,
 {
-    /// Create a new SnapSyncStage
+    /// Create a new `SnapSyncStage`
     pub fn new(config: SnapSyncConfig, snap_client: Arc<C>) -> Self {
         Self {
             config,
@@ -187,7 +187,7 @@ where
                 Some(account_data.body.as_ref().to_vec()),
                 &account_range.proof,
             ) {
-                Ok(()) => continue,
+                Ok(()) => {},
                 Err(e) => {
                     warn!(
                         target: "sync::stages::snap_sync",
@@ -205,9 +205,9 @@ where
 
     /// Get current target state root from header receiver
     pub fn get_target_state_root(&self) -> Option<B256> {
-        self.header_receiver.as_ref().and_then(|receiver| {
+        self.header_receiver.as_ref().map(|receiver| {
             let header = receiver.borrow();
-            Some(header.state_root)
+            header.state_root
         })
     }
 
@@ -222,7 +222,7 @@ where
     }
 
     /// Check for timed out requests
-    fn check_timeouts(&mut self) -> Vec<u64> {
+    fn check_timeouts(&self) -> Vec<u64> {
         let timeout_duration = Duration::from_secs(self.config.request_timeout_seconds);
         let now = Instant::now();
         let mut timed_out = Vec::new();
@@ -285,7 +285,7 @@ where
 
         // Poll any pending SnapClient requests
         let mut completed_requests = Vec::new();
-        for (request_id, future) in self.pending_requests.iter_mut() {
+        for (request_id, future) in &mut self.pending_requests {
             match future.as_mut().poll(cx) {
                 Poll::Ready(result) => {
                     match result {
@@ -313,7 +313,7 @@ where
                     }
                     completed_requests.push(*request_id);
                 }
-                Poll::Pending => continue,
+                Poll::Pending => {},
             }
         }
 
@@ -324,10 +324,10 @@ where
         }
 
         // Return ready if we have completed ranges to process
-        if !self.completed_ranges.is_empty() {
-            Poll::Ready(Ok(()))
-        } else {
+        if self.completed_ranges.is_empty() {
             Poll::Pending
+        } else {
+            Poll::Ready(Ok(()))
         }
     }
 
