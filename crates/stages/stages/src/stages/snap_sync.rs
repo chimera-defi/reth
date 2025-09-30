@@ -127,11 +127,15 @@ where
         }
     }
 
-    /// Process account ranges and return processed count
-    pub fn process_account_ranges(
+    /// Process account ranges and insert into database
+    pub fn process_account_ranges<Provider>(
         &self,
+        provider: &Provider,
         account_ranges: Vec<AccountRangeMessage>,
-    ) -> Result<usize, StageError> {
+    ) -> Result<usize, StageError>
+    where
+        Provider: DBProvider,
+    {
         let mut processed = 0;
 
         for account_range in account_ranges {
@@ -140,21 +144,31 @@ where
                 return Err(StageError::Fatal("Account range proof verification failed".into()));
             }
 
+            // Get write cursor for HashedAccounts table
+            let mut cursor = provider.tx_ref().cursor_rw::<tables::HashedAccounts>()?;
+
             // Process each account in the range
             for account_data in &account_range.accounts {
                 // Decode account data
                 let trie_account = TrieAccount::decode(&mut account_data.body.as_ref())
                     .map_err(|e| StageError::Fatal(format!("Failed to decode account: {}", e).into()))?;
 
-                // Store account data for database insertion
-                // Note: In a full implementation, this would insert into the database
-                // For now, we validate the data and count processed accounts
+                // Convert to Account type for database storage
+                let account = reth_primitives_traits::Account {
+                    nonce: trie_account.nonce,
+                    balance: trie_account.balance,
+                    bytecode_hash: Some(trie_account.code_hash),
+                };
+
+                // Insert account data into database
+                cursor.insert(account_data.hash, &account)?;
+
                 debug!(
                     target: "sync::stages::snap_sync",
                     account_hash = ?account_data.hash,
-                    nonce = ?trie_account.nonce,
-                    balance = ?trie_account.balance,
-                    "Processed account from snap sync"
+                    nonce = ?account.nonce,
+                    balance = ?account.balance,
+                    "Inserted account into database"
                 );
                 
                 processed += 1;
@@ -410,7 +424,7 @@ where
         // Process any completed account ranges
         if !self.completed_ranges.is_empty() {
             let completed_ranges = std::mem::take(&mut self.completed_ranges);
-            let processed = self.process_account_ranges(completed_ranges)?;
+            let processed = self.process_account_ranges(provider, completed_ranges)?;
             total_processed += processed;
         }
 
