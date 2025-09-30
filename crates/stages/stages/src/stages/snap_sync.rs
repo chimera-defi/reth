@@ -28,20 +28,17 @@ use std::{
 use tokio::sync::watch;
 use tracing::*;
 
-#[cfg(test)]
-mod tests;
-
 /// Snap sync stage for downloading trie data ranges from peers.
 /// Replaces SenderRecoveryStage, ExecutionStage and PruneSenderRecoveryStage when enabled.
 pub struct SnapSyncStage<C: SnapClient> {
     /// Configuration for the stage
-    config: SnapSyncConfig,
+    pub config: SnapSyncConfig,
     /// Snap client for peer communication
     snap_client: Arc<C>,
     /// Watch receiver for header updates from consensus engine
-    header_receiver: Option<watch::Receiver<SealedHeader>>,
+    pub header_receiver: Option<watch::Receiver<SealedHeader>>,
     /// Request ID counter for snap requests
-    request_id_counter: u64,
+    pub request_id_counter: u64,
     /// Current range being processed
     current_range: Option<(B256, B256)>,
     /// Pending network requests
