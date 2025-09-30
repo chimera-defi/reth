@@ -4,6 +4,7 @@ use reth_db_api::{
     cursor::DbCursorRO,
     tables,
     transaction::DbTx,
+    RawKey, RawTable, RawValue,
 };
 use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
 use reth_network_p2p::{snap::client::SnapClient, priority::Priority};
@@ -145,7 +146,7 @@ where
             }
 
             // Get write cursor for HashedAccounts table
-            let mut cursor = provider.tx_ref().cursor_rw::<tables::HashedAccounts>()?;
+            let mut cursor = provider.tx_ref().cursor_write::<RawTable<tables::HashedAccounts>>()?;
 
             // Process each account in the range
             for account_data in &account_range.accounts {
@@ -161,7 +162,10 @@ where
                 };
 
                 // Insert account data into database
-                cursor.insert(account_data.hash, &account)?;
+                cursor.insert(
+                    RawKey::new(account_data.hash),
+                    &RawValue::from_vec(account.compress())
+                )?;
 
                 debug!(
                     target: "sync::stages::snap_sync",
