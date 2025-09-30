@@ -143,12 +143,20 @@ where
             // Process each account in the range
             for account_data in &account_range.accounts {
                 // Decode account data
-                let _trie_account = TrieAccount::decode(&mut account_data.body.as_ref())
+                let trie_account = TrieAccount::decode(&mut account_data.body.as_ref())
                     .map_err(|e| StageError::Fatal(format!("Failed to decode account: {}", e).into()))?;
 
-                // For now, just count the processed accounts
-                // In a real implementation, this would insert into the database
-                // or return the data for the pipeline to handle
+                // Store account data for database insertion
+                // Note: In a full implementation, this would insert into the database
+                // For now, we validate the data and count processed accounts
+                debug!(
+                    target: "sync::stages::snap_sync",
+                    account_hash = ?account_data.hash,
+                    nonce = ?trie_account.nonce,
+                    balance = ?trie_account.balance,
+                    "Processed account from snap sync"
+                );
+                
                 processed += 1;
             }
         }
