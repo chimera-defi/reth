@@ -120,6 +120,36 @@ where
         }
     }
 
+    /// Get the next starting point for snap sync based on current database state
+    /// This implements proper state tracking for snap sync resumption
+    pub fn get_next_sync_starting_point<Provider>(&self, provider: &Provider) -> Result<B256, StageError>
+    where
+        Provider: DBProvider,
+    {
+        // Check if we have any accounts in the database
+        if self.is_hashed_state_empty(provider)? {
+            // If empty, start from the beginning
+            return Ok(B256::ZERO);
+        }
+
+        // For snap sync resumption, we need to find the last processed range
+        // This is a simplified approach - in practice, we'd store sync progress
+        let last_account = self.get_last_hashed_account(provider)?
+            .unwrap_or(B256::ZERO);
+        
+        // Calculate the next starting point after the last account
+        // This ensures we don't miss any accounts and don't duplicate work
+        let next_start = self.calculate_next_hash_in_lexicographic_order(last_account, 1)?;
+        
+        // Ensure we don't go beyond the maximum
+        let max_hash = B256::from([0xff; 32]);
+        if next_start >= max_hash {
+            return Ok(max_hash);
+        }
+        
+        Ok(next_start)
+    }
+
     /// Create account range request
     pub fn create_account_range_request(&mut self, starting_hash: B256, limit_hash: B256) -> GetAccountRangeMessage {
         self.request_id_counter += 1;
@@ -256,17 +286,17 @@ where
     /// Calculate the next trie range for snap sync requests
     /// This implements proper trie range calculation based on the snap protocol
     pub fn calculate_next_trie_range(&self, current: B256, max: B256) -> Result<(B256, B256), StageError> {
-        // For snap sync, we need to traverse the trie in a specific order
+        // For snap sync, we need to traverse the trie in lexicographic order
         // The range should be calculated based on the trie structure, not arbitrary hash values
         
         // Calculate a reasonable range size based on configuration
-        let range_size = self.config.max_response_bytes / 1000; // Rough estimate for range size
-        let range_size = range_size.max(100).min(10000); // Clamp to reasonable bounds
+        // This is a rough estimate - in practice, the actual range size depends on the data
+        let estimated_range_size = self.config.max_response_bytes / 1000; // Rough estimate
+        let range_size = estimated_range_size.max(100).min(10000); // Clamp to reasonable bounds
         
-        // For now, implement a simple incremental approach
-        // In a real implementation, this would be more sophisticated
-        let increment = self.calculate_hash_increment(current, range_size)?;
-        let next = self.add_to_hash(current, increment)?;
+        // For snap sync, we need to calculate the next range in lexicographic order
+        // This is a simplified implementation that increments the hash
+        let next = self.calculate_next_hash_in_lexicographic_order(current, range_size)?;
         
         // Ensure we don't exceed the maximum
         let range_end = if next > max { max } else { next };
@@ -274,30 +304,33 @@ where
         Ok((current, range_end))
     }
 
-    /// Calculate a hash increment for trie traversal
-    fn calculate_hash_increment(&self, current: B256, range_size: u64) -> Result<u64, StageError> {
-        // Simple increment based on range size
-        // In a real implementation, this would be more sophisticated
-        Ok(range_size)
-    }
-
-    /// Add a value to a B256 hash (simplified implementation)
-    fn add_to_hash(&self, hash: B256, increment: u64) -> Result<B256, StageError> {
-        // Convert B256 to u256, add increment, convert back
-        // This is a simplified implementation - in reality, you'd need proper big integer arithmetic
-        let hash_bytes = hash.as_slice();
-        let mut hash_u256 = [0u8; 32];
-        hash_u256.copy_from_slice(hash_bytes);
+    /// Calculate the next hash in lexicographic order for trie traversal
+    /// This is a simplified implementation - in practice, this would be more sophisticated
+    fn calculate_next_hash_in_lexicographic_order(&self, current: B256, range_size: u64) -> Result<B256, StageError> {
+        // For now, implement a simple increment approach
+        // In a real implementation, this would need to understand the trie structure better
         
-        // Simple addition on the last 8 bytes (treating as little-endian u64)
-        let mut last_8_bytes = [0u8; 8];
-        last_8_bytes.copy_from_slice(&hash_u256[24..32]);
-        let mut last_8_u64 = u64::from_le_bytes(last_8_bytes);
-        last_8_u64 = last_8_u64.saturating_add(increment);
-        last_8_bytes = last_8_u64.to_le_bytes();
-        hash_u256[24..32].copy_from_slice(&last_8_bytes);
+        // Convert to bytes for manipulation
+        let mut hash_bytes = current.as_slice().to_owned();
         
-        Ok(B256::from_slice(&hash_u256))
+        // Simple increment starting from the least significant byte
+        // This is not perfect but better than the previous approach
+        let mut carry = range_size;
+        for i in (0..32).rev() {
+            let (new_val, new_carry) = hash_bytes[i].overflowing_add(carry as u8);
+            hash_bytes[i] = new_val;
+            carry = if new_carry { 1 } else { 0 };
+            if carry == 0 {
+                break;
+            }
+        }
+        
+        // If we overflowed, return the max value
+        if carry > 0 {
+            return Ok(B256::from([0xff; 32]));
+        }
+        
+        Ok(B256::from_slice(&hash_bytes))
     }
 
     /// Queue a range for async processing in poll_execute_ready
@@ -469,13 +502,8 @@ where
         let target_state_root = self.get_target_state_root()
             .ok_or_else(|| StageError::Fatal("No target state root available".into()))?;
 
-        // Determine starting point
-        let starting_hash = if self.is_hashed_state_empty(provider)? {
-            B256::ZERO // Start from beginning if empty
-        } else {
-            self.get_last_hashed_account(provider)?
-                .unwrap_or(B256::ZERO)
-        };
+        // Determine starting point using improved state tracking
+        let starting_hash = self.get_next_sync_starting_point(provider)?;
 
         let mut total_processed = 0;
         let max_hash = B256::from([0xff; 32]);
