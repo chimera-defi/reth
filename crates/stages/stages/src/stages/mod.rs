@@ -708,7 +708,12 @@ mod tests {
             let snap_client = Arc::new(MockSnapClient);
             let stage = SnapSyncStage::new(config, snap_client);
             
-            let processed = stage.process_account_ranges(vec![]).unwrap();
+            // Create a test database provider
+            let test_db = TestStageDB::default();
+            let provider = test_db.factory.provider_rw().unwrap();
+            
+            // Test with empty account ranges
+            let processed = stage.process_account_ranges(&provider, vec![]).unwrap();
             assert_eq!(processed, 0);
         }
 

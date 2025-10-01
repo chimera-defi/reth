@@ -136,7 +136,7 @@ where
         account_ranges: Vec<AccountRangeMessage>,
     ) -> Result<usize, StageError>
     where
-        Provider: DBProvider,
+        Provider: DBProvider<Tx: DbTxMut>,
     {
         let mut processed = 0;
 
