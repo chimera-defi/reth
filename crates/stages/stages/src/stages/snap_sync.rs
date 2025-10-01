@@ -1,9 +1,11 @@
 use alloy_primitives::B256;
 use reth_config::config::SnapSyncConfig;
 use reth_db_api::{
-    cursor::DbCursorRO,
+    cursor::{DbCursorRO, DbCursorRW},
+    table::Compress,
     tables,
-    transaction::DbTx,
+    transaction::{DbTx, DbTxMut},
+    RawKey, RawTable, RawValue,
 };
 use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
 use reth_network_p2p::{snap::client::SnapClient, priority::Priority};
@@ -127,18 +129,15 @@ where
         }
     }
 
-    /// Process account ranges and validate data
-    /// 
-    /// TODO: Database writes are not yet implemented. This currently validates the data
-    /// and counts processed accounts. To implement real database writes:
-    /// 1. Get tx with write capability from provider
-    /// 2. Create cursor: `tx.cursor_write::<RawTable<tables::HashedAccounts>>()`
-    /// 3. Insert using: `cursor.insert(RawKey::new(hash), &RawValue::from_vec(account.compress()))`
-    /// 4. Import `Compress` trait from `reth_db_api::table::Compress`
-    pub fn process_account_ranges(
+    /// Process account ranges and insert into database
+    pub fn process_account_ranges<Provider>(
         &self,
+        provider: &Provider,
         account_ranges: Vec<AccountRangeMessage>,
-    ) -> Result<usize, StageError> {
+    ) -> Result<usize, StageError>
+    where
+        Provider: DBProvider,
+    {
         let mut processed = 0;
 
         for account_range in account_ranges {
@@ -147,20 +146,34 @@ where
                 return Err(StageError::Fatal("Account range proof verification failed".into()));
             }
 
+            // Get write cursor for HashedAccounts table
+            let mut cursor = provider.tx_ref().cursor_write::<RawTable<tables::HashedAccounts>>()?;
+
             // Process each account in the range
             for account_data in &account_range.accounts {
                 // Decode account data
                 let trie_account = TrieAccount::decode(&mut account_data.body.as_ref())
                     .map_err(|e| StageError::Fatal(format!("Failed to decode account: {}", e).into()))?;
 
-                // Validate account data
+                // Convert to Account type for database storage
+                let account = reth_primitives_traits::Account {
+                    nonce: trie_account.nonce,
+                    balance: trie_account.balance,
+                    bytecode_hash: Some(trie_account.code_hash),
+                };
+
+                // Insert account data into database
+                cursor.insert(
+                    RawKey::new(account_data.hash),
+                    &RawValue::from_vec(account.compress())
+                )?;
+
                 debug!(
                     target: "sync::stages::snap_sync",
                     account_hash = ?account_data.hash,
-                    nonce = ?trie_account.nonce,
-                    balance = ?trie_account.balance,
-                    code_hash = ?trie_account.code_hash,
-                    "Validated account from snap sync"
+                    nonce = ?account.nonce,
+                    balance = ?account.balance,
+                    "Inserted account into database"
                 );
                 
                 processed += 1;
@@ -416,7 +429,7 @@ where
         // Process any completed account ranges
         if !self.completed_ranges.is_empty() {
             let completed_ranges = std::mem::take(&mut self.completed_ranges);
-            let processed = self.process_account_ranges(completed_ranges)?;
+            let processed = self.process_account_ranges(provider, completed_ranges)?;
             total_processed += processed;
         }
 
