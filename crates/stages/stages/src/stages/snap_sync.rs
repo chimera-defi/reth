@@ -282,7 +282,7 @@ where
 
 impl<Provider, C> Stage<Provider> for SnapSyncStage<C>
 where
-    Provider: DBProvider + StatsReader + HeaderProvider,
+    Provider: DBProvider<Tx: DbTxMut> + StatsReader + HeaderProvider,
     C: SnapClient + Send + Sync + 'static,
 {
     fn id(&self) -> StageId {
