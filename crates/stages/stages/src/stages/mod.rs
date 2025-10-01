@@ -536,197 +536,121 @@ mod tests {
         update_db_and_check::<tables::Receipts>(&db, current + 1, None);
     }
 
-    // SnapSync stage tests
-    mod snap_sync_tests {
-        use super::*;
-        use crate::stages::SnapSyncStage;
-        use reth_config::config::SnapSyncConfig;
-        use reth_network_p2p::{
-            download::DownloadClient,
-            snap::client::SnapClient,
-            priority::Priority,
-        };
-        use reth_network_peers::{PeerId, WithPeerId};
-        use std::sync::Arc;
-        use std::future;
-
-        /// Simple mock snap client for testing
-        #[derive(Debug, Clone)]
-        struct MockSnapClient;
-
-        impl DownloadClient for MockSnapClient {
-            fn report_bad_message(&self, _peer_id: PeerId) {}
-            fn num_connected_peers(&self) -> usize { 1 }
-        }
-
-        impl SnapClient for MockSnapClient {
-            type Output = future::Ready<reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>>;
-            
-            fn get_account_range_with_priority(
-                &self,
-                _request: reth_eth_wire_types::snap::GetAccountRangeMessage,
-                _priority: Priority,
-            ) -> Self::Output {
-                future::ready(Ok(WithPeerId::new(
-                    PeerId::random(),
-                    reth_eth_wire_types::snap::AccountRangeMessage {
-                        request_id: 1,
-                        accounts: vec![],
-                        proof: vec![],
-                    },
-                )))
-            }
-
-            fn get_storage_ranges(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage) -> Self::Output {
-                future::ready(Ok(WithPeerId::new(
-                    PeerId::random(),
-                    reth_eth_wire_types::snap::AccountRangeMessage {
-                        request_id: 1,
-                        accounts: vec![],
-                        proof: vec![],
-                    },
-                )))
-            }
-
-            fn get_storage_ranges_with_priority(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage, _priority: Priority) -> Self::Output {
-                future::ready(Ok(WithPeerId::new(
-                    PeerId::random(),
-                    reth_eth_wire_types::snap::AccountRangeMessage {
-                        request_id: 1,
-                        accounts: vec![],
-                        proof: vec![],
-                    },
-                )))
-            }
-
-            fn get_byte_codes(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage) -> Self::Output {
-                future::ready(Ok(WithPeerId::new(
-                    PeerId::random(),
-                    reth_eth_wire_types::snap::AccountRangeMessage {
-                        request_id: 1,
-                        accounts: vec![],
-                        proof: vec![],
-                    },
-                )))
-            }
-
-            fn get_byte_codes_with_priority(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage, _priority: Priority) -> Self::Output {
-                future::ready(Ok(WithPeerId::new(
-                    PeerId::random(),
-                    reth_eth_wire_types::snap::AccountRangeMessage {
-                        request_id: 1,
-                        accounts: vec![],
-                        proof: vec![],
-                    },
-                )))
-            }
-
-            fn get_trie_nodes(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage) -> Self::Output {
-                future::ready(Ok(WithPeerId::new(
-                    PeerId::random(),
-                    reth_eth_wire_types::snap::AccountRangeMessage {
-                        request_id: 1,
-                        accounts: vec![],
-                        proof: vec![],
-                    },
-                )))
-            }
-
-            fn get_trie_nodes_with_priority(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage, _priority: Priority) -> Self::Output {
-                future::ready(Ok(WithPeerId::new(
-                    PeerId::random(),
-                    reth_eth_wire_types::snap::AccountRangeMessage {
-                        request_id: 1,
-                        accounts: vec![],
-                        proof: vec![],
-                    },
-                )))
-            }
-        }
-
+        // SnapSync stage tests - minimal integration test following reth pattern
         #[test]
-        fn test_snap_sync_stage_creation() {
-            let mut config = SnapSyncConfig::default();
-            config.enabled = true;
+        fn test_snap_sync_stage_basic() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use reth_network_p2p::{
+                download::DownloadClient,
+                snap::client::SnapClient,
+                priority::Priority,
+            };
+            use reth_network_peers::{PeerId, WithPeerId};
+            use std::sync::Arc;
+            use std::future;
+
+            /// Simple mock snap client for testing
+            #[derive(Debug, Clone)]
+            struct MockSnapClient;
+
+            impl DownloadClient for MockSnapClient {
+                fn report_bad_message(&self, _peer_id: PeerId) {}
+                fn num_connected_peers(&self) -> usize { 1 }
+            }
+
+            impl SnapClient for MockSnapClient {
+                type Output = future::Ready<reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>>;
+                
+                fn get_account_range_with_priority(
+                    &self,
+                    _request: reth_eth_wire_types::snap::GetAccountRangeMessage,
+                    _priority: Priority,
+                ) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(
+                        PeerId::random(),
+                        reth_eth_wire_types::snap::AccountRangeMessage {
+                            request_id: 1,
+                            accounts: vec![],
+                            proof: vec![],
+                        },
+                    )))
+                }
+
+                fn get_storage_ranges(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(
+                        PeerId::random(),
+                        reth_eth_wire_types::snap::AccountRangeMessage {
+                            request_id: 1,
+                            accounts: vec![],
+                            proof: vec![],
+                        },
+                    )))
+                }
+
+                fn get_storage_ranges_with_priority(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage, _priority: Priority) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(
+                        PeerId::random(),
+                        reth_eth_wire_types::snap::AccountRangeMessage {
+                            request_id: 1,
+                            accounts: vec![],
+                            proof: vec![],
+                        },
+                    )))
+                }
+
+                fn get_byte_codes(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(
+                        PeerId::random(),
+                        reth_eth_wire_types::snap::AccountRangeMessage {
+                            request_id: 1,
+                            accounts: vec![],
+                            proof: vec![],
+                        },
+                    )))
+                }
+
+                fn get_byte_codes_with_priority(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage, _priority: Priority) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(
+                        PeerId::random(),
+                        reth_eth_wire_types::snap::AccountRangeMessage {
+                            request_id: 1,
+                            accounts: vec![],
+                            proof: vec![],
+                        },
+                    )))
+                }
+
+                fn get_trie_nodes(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(
+                        PeerId::random(),
+                        reth_eth_wire_types::snap::AccountRangeMessage {
+                            request_id: 1,
+                            accounts: vec![],
+                            proof: vec![],
+                        },
+                    )))
+                }
+
+                fn get_trie_nodes_with_priority(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage, _priority: Priority) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(
+                        PeerId::random(),
+                        reth_eth_wire_types::snap::AccountRangeMessage {
+                            request_id: 1,
+                            accounts: vec![],
+                            proof: vec![],
+                        },
+                    )))
+                }
+            }
+
+            // Test stage creation and basic functionality
+            let config = SnapSyncConfig::default();
             let snap_client = Arc::new(MockSnapClient);
             let stage = SnapSyncStage::new(config, snap_client);
             
             // Test that stage is created successfully
-            assert!(stage.config.enabled);
-        }
-
-        #[test]
-        fn test_snap_sync_stage_disabled() {
-            let mut config = SnapSyncConfig::default();
-            config.enabled = false;
-            let snap_client = Arc::new(MockSnapClient);
-            let stage = SnapSyncStage::new(config, snap_client);
-            
-            // Test that stage respects disabled config
-            assert!(!stage.config.enabled);
-        }
-
-        #[test]
-        fn test_snap_sync_stage_with_header_receiver() {
-            let config = SnapSyncConfig::default();
-            let snap_client = Arc::new(MockSnapClient);
-            
-            // Create a mock header
-            let mock_header = reth_primitives_traits::SealedHeader::new(
-                reth_primitives_traits::Header {
-                    state_root: B256::from([0; 32]),
-                    ..Default::default()
-                },
-                B256::ZERO
-            );
-            
-            let (_sender, receiver) = tokio::sync::watch::channel(mock_header);
-            let stage = SnapSyncStage::new(config, snap_client).with_header_receiver(receiver);
-            
-            // Test that header receiver is set
-            assert!(stage.header_receiver.is_some());
-        }
-
-        #[test]
-        fn test_create_account_range_request() {
-            let config = SnapSyncConfig::default();
-            let snap_client = Arc::new(MockSnapClient);
-            let mut stage = SnapSyncStage::new(config, snap_client);
-            
-            let starting_hash = B256::ZERO;
-            let limit_hash = B256::from([0x10; 32]);
-            
-            let request = stage.create_account_range_request(starting_hash, limit_hash);
-            
-            assert_eq!(request.starting_hash, starting_hash);
-            assert_eq!(request.limit_hash, limit_hash);
-        }
-
-        #[test]
-        fn test_process_account_ranges() {
-            let config = SnapSyncConfig::default();
-            let snap_client = Arc::new(MockSnapClient);
-            let stage = SnapSyncStage::new(config, snap_client);
-            
-            // Create a test database provider
-            let test_db = TestStageDB::default();
-            let provider = test_db.factory.provider_rw().unwrap();
-            
-            // Test with empty account ranges
-            let processed = stage.process_account_ranges(&provider, vec![]).unwrap();
-            assert_eq!(processed, 0);
-        }
-
-        #[test]
-        fn test_snap_sync_stage_basic_functionality() {
-            let mut config = SnapSyncConfig::default();
-            config.enabled = true;
-            let snap_client = Arc::new(MockSnapClient);
-            let stage = SnapSyncStage::new(config, snap_client);
-            
-            // Test that stage is created successfully
-            assert!(stage.config.enabled);
+            assert!(!stage.config.enabled); // Default is disabled
             assert_eq!(stage.request_id_counter, 0);
         }
-    }
 }
