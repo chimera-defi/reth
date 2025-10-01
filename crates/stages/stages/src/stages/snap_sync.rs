@@ -41,8 +41,6 @@ pub struct SnapSyncStage<C: SnapClient> {
     pub header_receiver: Option<watch::Receiver<SealedHeader>>,
     /// Request ID counter for snap requests
     pub request_id_counter: u64,
-    /// Current range being processed
-    current_range: Option<(B256, B256)>,
     /// Pending network requests
     pending_requests: HashMap<u64, Pin<Box<dyn Future<Output = reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>> + Send + Sync + Unpin>>>,
     /// Request start times for timeout tracking
@@ -63,7 +61,6 @@ where
             .field("snap_client", &"<SnapClient>")
             .field("header_receiver", &self.header_receiver.is_some())
             .field("request_id_counter", &self.request_id_counter)
-            .field("current_range", &self.current_range)
             .field("pending_requests", &format!("<{} pending requests>", self.pending_requests.len()))
             .field("request_start_times", &format!("<{} tracked requests>", self.request_start_times.len()))
             .field("completed_ranges", &format!("<{} completed ranges>", self.completed_ranges.len()))
@@ -82,7 +79,6 @@ where
             snap_client,
             header_receiver: None,
             request_id_counter: 0,
-            current_range: None,
             pending_requests: HashMap::new(),
             request_start_times: HashMap::new(),
             completed_ranges: Vec::new(),
@@ -510,6 +506,10 @@ where
         provider: &Provider,
         input: ExecInput,
     ) -> Result<ExecOutput, StageError> {
+        if input.target_reached() {
+            return Ok(ExecOutput::done(input.checkpoint()));
+        }
+
         if !self.config.enabled {
             return Ok(ExecOutput {
                 checkpoint: input.checkpoint(),
@@ -572,12 +572,28 @@ where
 
     fn unwind(
         &mut self,
-        _provider: &Provider,
-        _input: UnwindInput,
+        provider: &Provider,
+        input: UnwindInput,
     ) -> Result<UnwindOutput, StageError> {
-        // Snap sync doesn't need unwinding as it's a one-time sync
-        Ok(UnwindOutput {
-            checkpoint: StageCheckpoint::new(0),
-        })
+        if !self.config.enabled {
+            return Ok(UnwindOutput { checkpoint: input.checkpoint });
+        }
+
+        // For snap sync, we need to clear the downloaded state data
+        // This is a simplified implementation - in practice, we'd need more sophisticated logic
+        let unwind_block = input.unwind_to;
+        
+        info!(
+            target: "sync::stages::snap_sync",
+            unwind_to = unwind_block,
+            "Unwinding snap sync stage - clearing downloaded state data"
+        );
+        
+        // For now, we'll use a simple approach to clear the table
+        // In a real implementation, we'd need to track which accounts were downloaded
+        // in which ranges and only clear the relevant ones
+        provider.tx_ref().clear::<tables::HashedAccounts>()?;
+        
+        Ok(UnwindOutput { checkpoint: input.checkpoint })
     }
 }
