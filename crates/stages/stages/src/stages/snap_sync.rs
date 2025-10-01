@@ -16,7 +16,7 @@ use reth_primitives_traits::SealedHeader;
 use alloy_trie::TrieAccount;
 use alloy_rlp::Decodable;
 use reth_stages_api::{
-    ExecInput, ExecOutput, Stage, StageCheckpoint, StageError,
+    ExecInput, ExecOutput, Stage, StageError,
     StageId, UnwindInput, UnwindOutput,
 };
 use std::{
@@ -159,6 +159,7 @@ where
     }
 
     /// Create a new account range request with explicit state root
+    /// This method includes the state root in the request for proper snap sync validation
     #[allow(clippy::missing_const_for_fn)]
     pub fn create_account_range_request_with_state_root(&mut self, starting_hash: B256, limit_hash: B256, state_root: B256) -> GetAccountRangeMessage {
         self.request_id_counter += 1;
@@ -556,8 +557,11 @@ where
             total_processed += processed;
         }
 
-        // If no data was returned for current target state root, we need to re-poll
-        if total_processed == 0 {
+        // Check if we've reached the end of the trie
+        let max_hash = B256::from([0xff; 32]);
+        let is_complete = current_starting_hash >= max_hash;
+        
+        if total_processed == 0 && !is_complete {
             debug!(
                 target: "sync::stages::snap_sync",
                 "No data returned for current target state root, will re-poll"
@@ -566,7 +570,7 @@ where
 
         Ok(ExecOutput {
             checkpoint: input.checkpoint(),
-            done: total_processed == 0, // Done when no more data
+            done: is_complete, // Done when we've reached the end of the trie
         })
     }
 
