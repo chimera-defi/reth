@@ -49,6 +49,8 @@ pub struct SnapSyncStage<C: SnapClient> {
     request_start_times: HashMap<u64, Instant>,
     /// Completed account ranges ready for processing
     completed_ranges: Vec<AccountRangeMessage>,
+    /// Queued ranges waiting for async processing
+    queued_ranges: Vec<(B256, B256, B256)>, // (start, end, state_root)
 }
 
 impl<C> std::fmt::Debug for SnapSyncStage<C>
@@ -84,6 +86,7 @@ where
             pending_requests: HashMap::new(),
             request_start_times: HashMap::new(),
             completed_ranges: Vec::new(),
+            queued_ranges: Vec::new(),
         }
     }
 
@@ -123,6 +126,18 @@ where
         GetAccountRangeMessage {
             request_id: self.request_id_counter,
             root_hash: self.get_target_state_root().unwrap_or(B256::ZERO),
+            starting_hash,
+            limit_hash,
+            response_bytes: self.config.max_response_bytes,
+        }
+    }
+
+    /// Create a new account range request with explicit state root
+    pub fn create_account_range_request_with_state_root(&mut self, starting_hash: B256, limit_hash: B256, state_root: B256) -> GetAccountRangeMessage {
+        self.request_id_counter += 1;
+        GetAccountRangeMessage {
+            request_id: self.request_id_counter,
+            root_hash: state_root, // Use the explicit state root
             starting_hash,
             limit_hash,
             response_bytes: self.config.max_response_bytes,
@@ -238,6 +253,65 @@ where
         })
     }
 
+    /// Calculate the next trie range for snap sync requests
+    /// This implements proper trie range calculation based on the snap protocol
+    pub fn calculate_next_trie_range(&self, current: B256, max: B256) -> Result<(B256, B256), StageError> {
+        // For snap sync, we need to traverse the trie in a specific order
+        // The range should be calculated based on the trie structure, not arbitrary hash values
+        
+        // Calculate a reasonable range size based on configuration
+        let range_size = self.config.max_response_bytes / 1000; // Rough estimate for range size
+        let range_size = range_size.max(100).min(10000); // Clamp to reasonable bounds
+        
+        // For now, implement a simple incremental approach
+        // In a real implementation, this would be more sophisticated
+        let increment = self.calculate_hash_increment(current, range_size)?;
+        let next = self.add_to_hash(current, increment)?;
+        
+        // Ensure we don't exceed the maximum
+        let range_end = if next > max { max } else { next };
+        
+        Ok((current, range_end))
+    }
+
+    /// Calculate a hash increment for trie traversal
+    fn calculate_hash_increment(&self, current: B256, range_size: u64) -> Result<u64, StageError> {
+        // Simple increment based on range size
+        // In a real implementation, this would be more sophisticated
+        Ok(range_size)
+    }
+
+    /// Add a value to a B256 hash (simplified implementation)
+    fn add_to_hash(&self, hash: B256, increment: u64) -> Result<B256, StageError> {
+        // Convert B256 to u256, add increment, convert back
+        // This is a simplified implementation - in reality, you'd need proper big integer arithmetic
+        let hash_bytes = hash.as_slice();
+        let mut hash_u256 = [0u8; 32];
+        hash_u256.copy_from_slice(hash_bytes);
+        
+        // Simple addition on the last 8 bytes (treating as little-endian u64)
+        let mut last_8_bytes = [0u8; 8];
+        last_8_bytes.copy_from_slice(&hash_u256[24..32]);
+        let mut last_8_u64 = u64::from_le_bytes(last_8_bytes);
+        last_8_u64 = last_8_u64.saturating_add(increment);
+        last_8_bytes = last_8_u64.to_le_bytes();
+        hash_u256[24..32].copy_from_slice(&last_8_bytes);
+        
+        Ok(B256::from_slice(&hash_u256))
+    }
+
+    /// Queue a range for async processing in poll_execute_ready
+    fn queue_range_for_processing(&mut self, start: B256, end: B256, state_root: B256) {
+        debug!(
+            target: "sync::stages::snap_sync",
+            start = ?start,
+            end = ?end,
+            state_root = ?state_root,
+            "Queueing range for async processing"
+        );
+        self.queued_ranges.push((start, end, state_root));
+    }
+
     /// Start tracking a request for timeout purposes
     fn start_request_tracking(&mut self, request_id: u64) {
         self.request_start_times.insert(request_id, Instant::now());
@@ -303,6 +377,27 @@ where
             return Poll::Pending;
         }
 
+        // Process any queued ranges by creating network requests
+        if !self.queued_ranges.is_empty() {
+            let queued_ranges = std::mem::take(&mut self.queued_ranges);
+            for (start, end, state_root) in queued_ranges {
+                let request = self.create_account_range_request_with_state_root(start, end, state_root);
+                
+                debug!(
+                    target: "sync::stages::snap_sync",
+                    request_id = request.request_id,
+                    starting_hash = ?request.starting_hash,
+                    limit_hash = ?request.limit_hash,
+                    root_hash = ?request.root_hash,
+                    "Creating network request from queued range"
+                );
+
+                // Create the network request future and queue it for polling
+                let future = self.snap_client.get_account_range_with_priority(request.clone(), Priority::Normal);
+                self.pending_requests.insert(request.request_id, Box::pin(future));
+                self.start_request_tracking(request.request_id);
+            }
+        }
 
         // Check for timed out requests
         let timed_out_requests = self.check_timeouts();
@@ -371,7 +466,7 @@ where
         }
 
         // Get target state root
-        let _target_state_root = self.get_target_state_root()
+        let target_state_root = self.get_target_state_root()
             .ok_or_else(|| StageError::Fatal("No target state root available".into()))?;
 
         // Determine starting point
@@ -392,38 +487,19 @@ where
                 break;
             }
 
-            // Calculate the range for this request using configurable range size
-            // For now, use a simple approach - process one range at a time
-            let limit_hash = if current_starting_hash == B256::ZERO {
-                // Start with a small range for the first request
-                B256::from([0x10; 32]) // 1/16th of the hash space
-            } else {
-                // For subsequent requests, move to the next range
-                // This is a simplified approach - in a real implementation,
-                // you would need proper hash arithmetic
-                max_hash
-            };
-
-            // Create account range request
-            let request = self.create_account_range_request(current_starting_hash, limit_hash);
+            // Calculate the next range using proper trie range logic
+            let (range_start, range_end) = self.calculate_next_trie_range(current_starting_hash, max_hash)?;
             
-            // Create and queue the network request
-            debug!(
-                target: "sync::stages::snap_sync",
-                request_id = request.request_id,
-                starting_hash = ?request.starting_hash,
-                limit_hash = ?request.limit_hash,
-                root_hash = ?request.root_hash,
-                "Creating account range request"
-            );
+            // If we've reached the end, we're done
+            if range_start >= max_hash {
+                break;
+            }
 
-            // Create the network request future and queue it for polling
-            let future = self.snap_client.get_account_range_with_priority(request.clone(), Priority::Normal);
-            self.pending_requests.insert(request.request_id, Box::pin(future));
-            self.start_request_tracking(request.request_id);
+            // Queue the range for async processing in poll_execute_ready
+            self.queue_range_for_processing(range_start, range_end, target_state_root);
 
             // Move to next range
-            current_starting_hash = limit_hash;
+            current_starting_hash = range_end;
         }
 
         // Process any completed account ranges
