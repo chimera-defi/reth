@@ -163,6 +163,7 @@ where
     }
 
     /// Create a new account range request with explicit state root
+    #[allow(clippy::missing_const_for_fn)]
     pub fn create_account_range_request_with_state_root(&mut self, starting_hash: B256, limit_hash: B256, state_root: B256) -> GetAccountRangeMessage {
         self.request_id_counter += 1;
         GetAccountRangeMessage {
@@ -307,6 +308,11 @@ where
     /// Calculate the next hash in lexicographic order for trie traversal
     /// This is a simplified implementation - in practice, this would be more sophisticated
     fn calculate_next_hash_in_lexicographic_order(&self, current: B256, range_size: u64) -> Result<B256, StageError> {
+        // Validate input parameters
+        if range_size == 0 {
+            return Err(StageError::Fatal("Range size cannot be zero".into()));
+        }
+        
         // For now, implement a simple increment approach
         // In a real implementation, this would need to understand the trie structure better
         
@@ -327,10 +333,23 @@ where
         
         // If we overflowed, return the max value
         if carry > 0 {
+            warn!(
+                target: "sync::stages::snap_sync",
+                current = ?current,
+                range_size = range_size,
+                "Hash increment overflowed, using max value"
+            );
             return Ok(B256::from([0xff; 32]));
         }
         
-        Ok(B256::from_slice(&hash_bytes))
+        let result = B256::from_slice(&hash_bytes);
+        
+        // Validate that we actually made progress
+        if result <= current {
+            return Err(StageError::Fatal("Hash increment did not make progress".into()));
+        }
+        
+        Ok(result)
     }
 
     /// Queue a range for async processing in poll_execute_ready

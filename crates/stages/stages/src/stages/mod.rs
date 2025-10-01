@@ -787,4 +787,76 @@ mod tests {
             assert_eq!(request.root_hash, state_root); // State root should be included
             assert!(request.request_id > 0);
         }
+
+        #[test]
+        fn test_snap_sync_edge_cases() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use reth_network_p2p::{
+                download::DownloadClient,
+                snap::client::SnapClient,
+                priority::Priority,
+            };
+            use reth_network_peers::{PeerId, WithPeerId};
+            use std::sync::Arc;
+            use std::future;
+
+            /// Mock snap client
+            #[derive(Debug, Clone)]
+            struct MockSnapClient;
+
+            impl DownloadClient for MockSnapClient {
+                fn report_bad_message(&self, _peer_id: PeerId) {}
+                fn num_connected_peers(&self) -> usize { 1 }
+            }
+
+            impl SnapClient for MockSnapClient {
+                type Output = future::Ready<reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>>;
+                
+                fn get_account_range_with_priority(&self, _request: reth_eth_wire_types::snap::GetAccountRangeMessage, _priority: Priority) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(PeerId::random(), reth_eth_wire_types::snap::AccountRangeMessage { request_id: 1, accounts: vec![], proof: vec![] })))
+                }
+                fn get_storage_ranges(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(PeerId::random(), reth_eth_wire_types::snap::AccountRangeMessage { request_id: 1, accounts: vec![], proof: vec![] })))
+                }
+                fn get_storage_ranges_with_priority(&self, _request: reth_eth_wire_types::snap::GetStorageRangesMessage, _priority: Priority) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(PeerId::random(), reth_eth_wire_types::snap::AccountRangeMessage { request_id: 1, accounts: vec![], proof: vec![] })))
+                }
+                fn get_byte_codes(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(PeerId::random(), reth_eth_wire_types::snap::AccountRangeMessage { request_id: 1, accounts: vec![], proof: vec![] })))
+                }
+                fn get_byte_codes_with_priority(&self, _request: reth_eth_wire_types::snap::GetByteCodesMessage, _priority: Priority) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(PeerId::random(), reth_eth_wire_types::snap::AccountRangeMessage { request_id: 1, accounts: vec![], proof: vec![] })))
+                }
+                fn get_trie_nodes(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(PeerId::random(), reth_eth_wire_types::snap::AccountRangeMessage { request_id: 1, accounts: vec![], proof: vec![] })))
+                }
+                fn get_trie_nodes_with_priority(&self, _request: reth_eth_wire_types::snap::GetTrieNodesMessage, _priority: Priority) -> Self::Output {
+                    future::ready(Ok(WithPeerId::new(PeerId::random(), reth_eth_wire_types::snap::AccountRangeMessage { request_id: 1, accounts: vec![], proof: vec![] })))
+                }
+            }
+
+            // Test edge cases
+            let config = SnapSyncConfig::default();
+            let snap_client = Arc::new(MockSnapClient);
+            let stage = SnapSyncStage::new(config, snap_client);
+            
+            // Test 1: Zero range size should fail
+            let current = B256::ZERO;
+            let max = B256::from([0xff; 32]);
+            let result = stage.calculate_next_trie_range(current, max);
+            assert!(result.is_ok()); // Should work with default config
+            
+            // Test 2: Same start and max should return max
+            let same_hash = B256::from([0x42; 32]);
+            let (range_start, range_end) = stage.calculate_next_trie_range(same_hash, same_hash).unwrap();
+            assert_eq!(range_start, same_hash);
+            assert_eq!(range_end, same_hash);
+            
+            // Test 3: Near max value should handle overflow
+            let near_max = B256::from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe]);
+            let (range_start, range_end) = stage.calculate_next_trie_range(near_max, max).unwrap();
+            assert_eq!(range_start, near_max);
+            assert!(range_end >= near_max);
+        }
 }
