@@ -357,7 +357,7 @@ pub struct ExecutionStages<E: ConfigureEvm, S = ()> {
     /// Configuration for each stage in the pipeline
     stages_config: StageConfig,
     /// Optional snap client for snap sync (when enabled)
-    /// SnapSyncStage is integrated into the pipeline when snap sync is enabled
+    /// `SnapSyncStage` is integrated into the pipeline when snap sync is enabled
     snap_client: Option<Arc<S>>,
 }
 

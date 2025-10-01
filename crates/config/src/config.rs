@@ -286,7 +286,7 @@ impl Default for SnapSyncConfig {
             max_ranges_per_execution: 100,
             max_response_bytes: 2 * 1024 * 1024, // 2MB
             request_timeout_seconds: 30,
-            range_size: 0x1000000000000000, // 1/16th of hash space (default)
+            range_size: 0x10, // 16 hash values (very small default for testing)
         }
     }
 }

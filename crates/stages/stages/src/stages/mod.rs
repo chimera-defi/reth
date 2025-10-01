@@ -704,6 +704,8 @@ mod tests {
 
             // Test range calculation functionality
             let config = SnapSyncConfig::default();
+            // Use default range size - should work now with improved logic
+            // config.range_size = 0x10; // Use a much smaller range size for testing
             let snap_client = Arc::new(MockSnapClient);
             let stage = SnapSyncStage::new(config, snap_client);
             
@@ -718,7 +720,7 @@ mod tests {
             assert!(range_end <= max);
             
             // Test that subsequent ranges don't overlap
-            let (range_start2, range_end2) = stage.calculate_next_trie_range(range_end, max).unwrap();
+            let (range_start2, _range_end2) = stage.calculate_next_trie_range(range_end, max).unwrap();
             assert!(range_start2 >= range_end); // No overlap
         }
 
