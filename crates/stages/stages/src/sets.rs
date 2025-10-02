@@ -408,7 +408,7 @@ where
         
         // Check if snap sync is enabled
         if self.stages_config.snap_sync.enabled {
-            // Use snap sync stages when enabled
+            // Use snap sync stage when enabled - REPLACES SenderRecoveryStage, ExecutionStage, PruneSenderRecoveryStage
             if let Some(snap_client) = self.snap_client {
                 builder = builder.add_stage(crate::stages::SnapSyncStage::new(
                     self.stages_config.snap_sync,

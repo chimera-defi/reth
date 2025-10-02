@@ -41,14 +41,12 @@ pub struct SnapSyncStage<C: SnapClient> {
     pub header_receiver: Option<watch::Receiver<SealedHeader>>,
     /// Request ID counter for snap requests
     pub request_id_counter: u64,
-    /// Pending network requests
-    pending_requests: HashMap<u64, Pin<Box<dyn Future<Output = reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>> + Send + Sync + Unpin>>>,
-    /// Request start times for timeout tracking
-    request_start_times: HashMap<u64, Instant>,
-    /// Completed account ranges ready for processing
-    completed_ranges: Vec<AccountRangeMessage>,
-    /// Queued ranges waiting for async processing
-    queued_ranges: Vec<(B256, B256, B256)>, // (start, end, state_root)
+            /// Pending network requests
+            pending_requests: HashMap<u64, Pin<Box<dyn Future<Output = reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>> + Send + Sync + Unpin>>>,
+            /// Request start times for timeout tracking
+            request_start_times: HashMap<u64, Instant>,
+            /// Completed account ranges ready for processing
+            completed_ranges: Vec<AccountRangeMessage>,
 }
 
 impl<C> std::fmt::Debug for SnapSyncStage<C>
@@ -82,7 +80,6 @@ where
             pending_requests: HashMap::new(),
             request_start_times: HashMap::new(),
             completed_ranges: Vec::new(),
-            queued_ranges: Vec::new(),
         }
     }
 
@@ -297,17 +294,31 @@ where
         // For snap sync, we need to traverse the trie in lexicographic order
         // The range should be calculated based on the trie structure, not arbitrary hash values
         
-        // Use the configured range size for consistent behavior
-        let range_size = self.config.range_size;
+        // Calculate optimal range size based on max_response_bytes
+        // This provides better sync efficiency than a fixed range size
+        let optimal_range_size = self.calculate_optimal_range_size();
         
         // For snap sync, we need to calculate the next range in lexicographic order
         // This is a simplified implementation that increments the hash
-        let next = self.calculate_next_hash_in_lexicographic_order(current, range_size)?;
+        let next = self.calculate_next_hash_in_lexicographic_order(current, optimal_range_size)?;
         
         // Ensure we don't exceed the maximum
         let range_end = if next > max { max } else { next };
         
         Ok((current, range_end))
+    }
+
+    /// Calculate optimal range size based on max_response_bytes configuration
+    /// This improves sync efficiency by adapting range size to response capacity
+    fn calculate_optimal_range_size(&self) -> u64 {
+        // Estimate accounts per range based on average account size
+        // Average account size is approximately 100 bytes (nonce + balance + code_hash + storage_root)
+        let estimated_account_size = 100;
+        let max_accounts_per_range = self.config.max_response_bytes / estimated_account_size;
+        
+        // Use the smaller of configured range_size or calculated optimal size
+        // This ensures we don't exceed response limits while maintaining efficiency
+        std::cmp::min(self.config.range_size, max_accounts_per_range as u64)
     }
 
     /// Calculate the next hash in lexicographic order for trie traversal
@@ -377,17 +388,6 @@ where
         Ok(result)
     }
 
-    /// Queue a range for async processing in `poll_execute_ready`
-    fn queue_range_for_processing(&mut self, start: B256, end: B256, state_root: B256) {
-        debug!(
-            target: "sync::stages::snap_sync",
-            start = ?start,
-            end = ?end,
-            state_root = ?state_root,
-            "Queueing range for async processing"
-        );
-        self.queued_ranges.push((start, end, state_root));
-    }
 
     /// Start tracking a request for timeout purposes
     fn start_request_tracking(&mut self, request_id: u64) {
@@ -454,27 +454,6 @@ where
             return Poll::Pending;
         }
 
-        // Process any queued ranges by creating network requests
-        if !self.queued_ranges.is_empty() {
-            let queued_ranges = std::mem::take(&mut self.queued_ranges);
-            for (start, end, state_root) in queued_ranges {
-                let request = self.create_account_range_request_with_state_root(start, end, state_root);
-                
-                debug!(
-                    target: "sync::stages::snap_sync",
-                    request_id = request.request_id,
-                    starting_hash = ?request.starting_hash,
-                    limit_hash = ?request.limit_hash,
-                    root_hash = ?request.root_hash,
-                    "Creating network request from queued range"
-                );
-
-                // Create the network request future and queue it for polling
-                let future = self.snap_client.get_account_range_with_priority(request.clone(), Priority::Normal);
-                self.pending_requests.insert(request.request_id, Box::pin(future));
-                self.start_request_tracking(request.request_id);
-            }
-        }
 
         // Check for timed out requests
         let timed_out_requests = self.check_timeouts();
@@ -545,18 +524,18 @@ where
             });
         }
 
-        // Get target state root
+        // Step 1: Retrieve the latest header from the engine
         let target_state_root = self.get_target_state_root()
             .ok_or_else(|| StageError::Fatal("No target state root available".into()))?;
 
-        // Determine starting point using improved state tracking
+        // Step 2: Check if the hashed state in tables::HashedAccounts is empty
         let starting_hash = self.get_next_sync_starting_point(provider)?;
 
         let mut total_processed = 0;
         let max_hash = B256::from([0xff; 32]);
         let mut current_starting_hash = starting_hash;
 
-        // Process multiple ranges per execution (configurable)
+        // Step 3: Paginate over trie ranges using GetAccountRange request
         for _ in 0..self.config.max_ranges_per_execution {
             if current_starting_hash >= max_hash {
                 break;
@@ -570,8 +549,22 @@ where
                 break;
             }
 
-            // Queue the range for async processing in poll_execute_ready
-            self.queue_range_for_processing(range_start, range_end, target_state_root);
+            // Create and send GetAccountRange request synchronously
+            let request = self.create_account_range_request_with_state_root(range_start, range_end, target_state_root);
+            
+            debug!(
+                target: "sync::stages::snap_sync",
+                request_id = request.request_id,
+                starting_hash = ?request.starting_hash,
+                limit_hash = ?request.limit_hash,
+                root_hash = ?request.root_hash,
+                "Creating account range request"
+            );
+
+            // Send the request via SnapClient
+            let future = self.snap_client.get_account_range_with_priority(request.clone(), Priority::Normal);
+            self.pending_requests.insert(request.request_id, Box::pin(future));
+            self.start_request_tracking(request.request_id);
 
             // Move to next range
             current_starting_hash = range_end;
@@ -587,25 +580,25 @@ where
                 target: "sync::stages::snap_sync",
                 processed_this_round = processed,
                 total_processed = total_processed,
-                ranges_queued = self.queued_ranges.len(),
                 pending_requests = self.pending_requests.len(),
                 "Snap sync progress update"
             );
         }
 
-        // Check if we've reached the end of the trie
+        // Step 4: If no data was returned for current target state root, return to step 1
+        // This is handled by returning done=false when no data was processed
         let is_complete = current_starting_hash >= max_hash;
         
         if total_processed == 0 && !is_complete {
             debug!(
                 target: "sync::stages::snap_sync",
-                "No data returned for current target state root, will re-poll"
+                "No data returned for current target state root, will re-poll for new header"
             );
         }
 
         Ok(ExecOutput {
             checkpoint: input.checkpoint(),
-            done: is_complete, // Done when we've reached the end of the trie
+            done: is_complete, // Done when we've reached the end of the trie (0xffff...)
         })
     }
 
