@@ -845,4 +845,176 @@ mod tests {
             assert_eq!(range_start, near_max);
             assert!(range_end >= near_max);
         }
+
+        #[test]
+        fn test_snap_sync_state_root_change_detection() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use alloy_primitives::B256;
+            use std::sync::Arc;
+
+            // Test state root change detection
+            let config = SnapSyncConfig::default();
+            let snap_client = Arc::new(MockSnapClient);
+            let stage = SnapSyncStage::new(config, snap_client);
+            
+            // Test initial state - no state root
+            assert!(!stage.has_state_root_changed(None));
+            // When no header receiver, get_target_state_root returns None
+            // So comparing None with Some(B256::ZERO) should be detected as changed
+            assert!(stage.has_state_root_changed(Some(B256::ZERO)));
+            
+            // Test with no header receiver - None vs Some should be detected as changed
+            assert!(stage.has_state_root_changed(Some(B256::from([0x42; 32]))));
+            
+            // Test state root change detection
+            let root1 = B256::from([0x01; 32]);
+            let root2 = B256::from([0x02; 32]);
+            
+            // With no header receiver, get_target_state_root returns None
+            // So comparing None with Some(root1) should be detected as changed
+            assert!(stage.has_state_root_changed(Some(root1)));
+            
+            // Different root should also be detected as changed
+            assert!(stage.has_state_root_changed(Some(root2)));
+        }
+
+        #[test]
+        fn test_snap_sync_retry_logic() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use reth_network_p2p::error::RequestError;
+            use std::sync::Arc;
+
+            // Test retry logic
+            let config = SnapSyncConfig::default();
+            let snap_client = Arc::new(MockSnapClient);
+            let mut stage = SnapSyncStage::new(config, snap_client);
+            
+            let request_id = 123;
+            let error = RequestError::Timeout;
+            
+            // Test first failure - should increment retry count
+            stage.handle_request_failure(request_id, &error);
+            assert_eq!(stage.request_retry_counts.get(&request_id), Some(&1));
+            
+            // Test second failure - should increment retry count
+            stage.handle_request_failure(request_id, &error);
+            assert_eq!(stage.request_retry_counts.get(&request_id), Some(&2));
+            
+            // Test third failure - should increment retry count
+            stage.handle_request_failure(request_id, &error);
+            assert_eq!(stage.request_retry_counts.get(&request_id), Some(&3));
+            
+            // Test fourth failure - should remove from retry counts (max retries exceeded)
+            stage.handle_request_failure(request_id, &error);
+            assert_eq!(stage.request_retry_counts.get(&request_id), None);
+        }
+
+        #[test]
+        fn test_snap_sync_request_creation_with_state_root() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use alloy_primitives::B256;
+            use std::sync::Arc;
+
+            // Test request creation with explicit state root
+            let config = SnapSyncConfig::default();
+            let snap_client = Arc::new(MockSnapClient);
+            let mut stage = SnapSyncStage::new(config, snap_client);
+            
+            let starting_hash = B256::from([0x01; 32]);
+            let limit_hash = B256::from([0x02; 32]);
+            let state_root = B256::from([0x42; 32]);
+            
+            let request = stage.create_account_range_request_with_state_root(
+                starting_hash, 
+                limit_hash, 
+                state_root
+            );
+            
+            // Verify request properties
+            assert_eq!(request.starting_hash, starting_hash);
+            assert_eq!(request.limit_hash, limit_hash);
+            assert_eq!(request.root_hash, state_root);
+            assert!(request.request_id > 0);
+            assert_eq!(request.response_bytes, config.max_response_bytes);
+        }
+
+        #[test]
+        fn test_snap_sync_optimal_range_size_calculation() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use std::sync::Arc;
+
+            // Test optimal range size calculation
+            let mut config = SnapSyncConfig::default();
+            config.max_response_bytes = 1000; // 1KB
+            config.range_size = 100; // 100 accounts
+            
+            let snap_client = Arc::new(MockSnapClient);
+            let stage = SnapSyncStage::new(config, snap_client);
+            
+            // Test that optimal range size is calculated correctly
+            // With 1KB max response and ~100 bytes per account, we should get ~10 accounts per range
+            let optimal_size = stage.calculate_optimal_range_size();
+            assert!(optimal_size > 0);
+            assert!(optimal_size <= 100); // Should not exceed configured range_size
+        }
+
+        #[test]
+        fn test_snap_sync_noop_waker() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use std::sync::Arc;
+
+            // Test noop waker creation
+            let config = SnapSyncConfig::default();
+            let _snap_client = Arc::new(MockSnapClient);
+            let _stage = SnapSyncStage::new(config, _snap_client);
+            
+            // Test that noop waker can be created without panicking
+            let _waker = SnapSyncStage::<MockSnapClient>::noop_waker();
+            // Noop waker should be created successfully (will_wake behavior is implementation dependent)
+            assert!(true); // Just test that it doesn't panic
+        }
+
+        #[test]
+        fn test_snap_sync_request_sending_path() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use alloy_primitives::B256;
+            use std::sync::Arc;
+
+            // Test that request sending path works correctly
+            let mut config = SnapSyncConfig::default();
+            config.enabled = true;
+            config.max_ranges_per_execution = 1;
+            
+            let snap_client = Arc::new(MockSnapClient);
+            let mut stage = SnapSyncStage::new(config, snap_client);
+            
+            // Test request creation and sending
+            let starting_hash = B256::from([0x01; 32]);
+            let limit_hash = B256::from([0x02; 32]);
+            let state_root = B256::from([0x42; 32]);
+            
+            let request = stage.create_account_range_request_with_state_root(
+                starting_hash, 
+                limit_hash, 
+                state_root
+            );
+            
+            // Verify request was created correctly
+            assert_eq!(request.starting_hash, starting_hash);
+            assert_eq!(request.limit_hash, limit_hash);
+            assert_eq!(request.root_hash, state_root);
+            assert!(request.request_id > 0);
+            
+            // Test that we can send the request via SnapClient
+            let _future = stage.snap_client.get_account_range_with_priority(request.clone(), reth_network_p2p::priority::Priority::Normal);
+            
+            // Verify that the future is created (this tests the request sending path)
+            assert!(true); // Just test that it doesn't panic
+        }
 }

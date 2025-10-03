@@ -10,7 +10,7 @@ use reth_db_api::{
 use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
 use reth_network_p2p::{snap::client::SnapClient, priority::Priority};
 use reth_provider::{
-    DBProvider, StatsReader, HeaderProvider,
+    DBProvider,
 };
 use reth_primitives_traits::SealedHeader;
 use alloy_trie::TrieAccount;
@@ -36,7 +36,7 @@ pub struct SnapSyncStage<C: SnapClient> {
     /// Configuration for the stage
     pub config: SnapSyncConfig,
     /// Snap client for peer communication
-    snap_client: Arc<C>,
+    pub snap_client: Arc<C>,
     /// Watch receiver for header updates from consensus engine
     pub header_receiver: Option<watch::Receiver<SealedHeader>>,
     /// Request ID counter for snap requests
@@ -46,7 +46,7 @@ pub struct SnapSyncStage<C: SnapClient> {
     /// Request start times for timeout tracking
     request_start_times: HashMap<u64, Instant>,
     /// Request retry counts for failed requests
-    request_retry_counts: HashMap<u64, u32>,
+    pub request_retry_counts: HashMap<u64, u32>,
     /// Completed account ranges ready for processing
     completed_ranges: Vec<AccountRangeMessage>,
     /// Last known state root to detect changes
@@ -75,7 +75,7 @@ where
     C: SnapClient + Send + Sync + 'static,
 {
     /// Create a no-op waker for polling futures synchronously
-    fn noop_waker() -> Waker {
+    pub fn noop_waker() -> Waker {
         use std::task::{RawWaker, RawWakerVTable};
         
         unsafe fn noop_clone(_data: *const ()) -> RawWaker {
@@ -177,6 +177,11 @@ where
         // TODO: Implement proper progress persistence using stage checkpoint
         // This would store the last processed range in the stage checkpoint
         // and resume from there instead of probing the database
+        // 
+        // The proper implementation would:
+        // 1. Store the last processed range in a dedicated progress table
+        // 2. Use the stage checkpoint to track sync progress
+        // 3. Resume from the stored progress instead of probing HashedAccounts
         
         Ok(next_start)
     }
@@ -384,7 +389,7 @@ where
 
     /// Calculate optimal range size based on max_response_bytes configuration
     /// This improves sync efficiency by adapting range size to response capacity
-    fn calculate_optimal_range_size(&self) -> u64 {
+    pub fn calculate_optimal_range_size(&self) -> u64 {
         // Estimate accounts per range based on average account size
         // Average account size is approximately 100 bytes (nonce + balance + code_hash + storage_root)
         let estimated_account_size = 100;
@@ -504,7 +509,7 @@ where
     }
 
     /// Handle request failure with retry logic
-    fn handle_request_failure(&mut self, request_id: u64, error: &reth_network_p2p::error::RequestError) {
+    pub fn handle_request_failure(&mut self, request_id: u64, error: &reth_network_p2p::error::RequestError) {
         let retry_count = self.request_retry_counts.get(&request_id).copied().unwrap_or(0);
         let max_retries = 3; // TODO: Make this configurable
         
@@ -541,7 +546,7 @@ where
 
 impl<Provider, C> Stage<Provider> for SnapSyncStage<C>
 where
-    Provider: DBProvider<Tx: DbTxMut> + StatsReader + HeaderProvider,
+    Provider: DBProvider<Tx: DbTxMut>,
     C: SnapClient + Send + Sync + 'static,
 {
     fn id(&self) -> StageId {
@@ -776,18 +781,47 @@ where
             return Ok(UnwindOutput { checkpoint: input.checkpoint });
         }
 
-        // For snap sync, we need to clear the downloaded state data
         let unwind_block = input.unwind_to;
         
         info!(
             target: "sync::stages::snap_sync",
             unwind_to = unwind_block,
-            "Unwinding snap sync stage - clearing downloaded state data"
+            "Unwinding snap sync stage"
         );
         
-        // Clear all downloaded account data from the HashedAccounts table
-        // This ensures a clean state when unwinding snap sync
-        provider.tx_ref().clear::<tables::HashedAccounts>()?;
+        // For snap sync, we need to handle unwinding carefully
+        // Since snap sync doesn't have block-based progress tracking,
+        // we need to implement a different strategy
+        
+        // TODO: Implement proper snap sync unwind logic
+        // This should:
+        // 1. Check if we have any snap sync progress to unwind
+        // 2. If we do, clear the relevant state data
+        // 3. If we don't, just return without clearing anything
+        
+        // For now, we'll implement a simplified approach:
+        // If we have any accounts in HashedAccounts, we'll clear them
+        // This is not ideal but ensures consistency
+        
+        let has_accounts = !self.is_hashed_state_empty(provider)?;
+        
+        if has_accounts {
+            warn!(
+                target: "sync::stages::snap_sync",
+                unwind_to = unwind_block,
+                "Clearing all snap sync data during unwind - this is a simplified implementation"
+            );
+            
+            // Clear all downloaded account data from the HashedAccounts table
+            // This ensures a clean state when unwinding snap sync
+            provider.tx_ref().clear::<tables::HashedAccounts>()?;
+        } else {
+            debug!(
+                target: "sync::stages::snap_sync",
+                unwind_to = unwind_block,
+                "No snap sync data to unwind"
+            );
+        }
         
         Ok(UnwindOutput { checkpoint: input.checkpoint })
     }
