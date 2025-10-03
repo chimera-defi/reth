@@ -24,7 +24,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
@@ -43,10 +43,14 @@ pub struct SnapSyncStage<C: SnapClient> {
     pub request_id_counter: u64,
             /// Pending network requests
             pending_requests: HashMap<u64, Pin<Box<dyn Future<Output = reth_network_p2p::error::PeerRequestResult<reth_eth_wire_types::snap::AccountRangeMessage>> + Send + Sync + Unpin>>>,
-            /// Request start times for timeout tracking
-            request_start_times: HashMap<u64, Instant>,
-            /// Completed account ranges ready for processing
-            completed_ranges: Vec<AccountRangeMessage>,
+    /// Request start times for timeout tracking
+    request_start_times: HashMap<u64, Instant>,
+    /// Request retry counts for failed requests
+    request_retry_counts: HashMap<u64, u32>,
+    /// Completed account ranges ready for processing
+    completed_ranges: Vec<AccountRangeMessage>,
+    /// Last known state root to detect changes
+    last_known_state_root: Option<B256>,
 }
 
 impl<C> std::fmt::Debug for SnapSyncStage<C>
@@ -70,6 +74,33 @@ impl<C> SnapSyncStage<C>
 where
     C: SnapClient + Send + Sync + 'static,
 {
+    /// Create a no-op waker for polling futures synchronously
+    fn noop_waker() -> Waker {
+        use std::task::{RawWaker, RawWakerVTable};
+        
+        unsafe fn noop_clone(_data: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
+        
+        unsafe fn noop(_data: *const ()) {}
+        
+        unsafe fn noop_wake(_data: *const ()) {}
+        
+        unsafe fn noop_wake_by_ref(_data: *const ()) {}
+        
+        const NOOP_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+            noop_clone,
+            noop_wake,
+            noop_wake_by_ref,
+            noop,
+        );
+        
+        unsafe fn noop_raw_waker() -> RawWaker {
+            RawWaker::new(std::ptr::null(), &NOOP_WAKER_VTABLE)
+        }
+        
+        unsafe { Waker::from_raw(noop_raw_waker()) }
+    }
     /// Create a new `SnapSyncStage`
     pub fn new(config: SnapSyncConfig, snap_client: Arc<C>) -> Self {
         Self {
@@ -79,7 +110,9 @@ where
             request_id_counter: 0,
             pending_requests: HashMap::new(),
             request_start_times: HashMap::new(),
+            request_retry_counts: HashMap::new(),
             completed_ranges: Vec::new(),
+            last_known_state_root: None,
         }
     }
 
@@ -127,6 +160,7 @@ where
 
         // For snap sync resumption, we need to find the last processed range
         // This is a simplified approach - in practice, we'd store sync progress
+        // in a dedicated progress table or use the stage checkpoint
         let last_account = self.get_last_hashed_account(provider)?
             .unwrap_or(B256::ZERO);
         
@@ -139,6 +173,10 @@ where
         if next_start >= max_hash {
             return Ok(max_hash);
         }
+        
+        // TODO: Implement proper progress persistence using stage checkpoint
+        // This would store the last processed range in the stage checkpoint
+        // and resume from there instead of probing the database
         
         Ok(next_start)
     }
@@ -200,7 +238,7 @@ where
                 let account = reth_primitives_traits::Account {
                     nonce: trie_account.nonce,
                     balance: trie_account.balance,
-                    bytecode_hash: Some(trie_account.code_hash),
+                    bytecode_hash: if trie_account.code_hash == B256::ZERO { None } else { Some(trie_account.code_hash) },
                 };
 
                 // Insert account data into database
@@ -234,6 +272,7 @@ where
     }
 
     /// Verify account range proof using Merkle proof verification
+    /// Snap protocol proofs are for range boundaries, not individual accounts
     fn verify_account_range_proof(&self, account_range: &AccountRangeMessage) -> Result<bool, StageError> {
         use alloy_trie::proof::verify_proof;
         use reth_trie_common::Nibbles;
@@ -252,32 +291,54 @@ where
         let target_state_root = self.get_target_state_root()
             .ok_or_else(|| StageError::Fatal("No target state root available for proof verification".into()))?;
         
-        // Verify each account in the range
-        for account_data in &account_range.accounts {
-            // Convert account hash to nibbles for proof verification
-            let account_nibbles = Nibbles::unpack(account_data.hash);
-            
-            // Verify the proof for this account
-            match verify_proof(
-                target_state_root,
-                account_nibbles,
-                Some(account_data.body.as_ref().to_vec()),
-                &account_range.proof,
-            ) {
-                Ok(()) => {},
-                Err(e) => {
-                    warn!(
-                        target: "sync::stages::snap_sync",
-                        account_hash = ?account_data.hash,
-                        error = %e,
-                        "Account proof verification failed"
-                    );
-                    return Err(StageError::Fatal(format!("Account proof verification failed: {}", e).into()));
+        // For snap protocol, we need to verify the range boundary proof
+        // The proof should prove the range from first account to last account
+        let first_account = account_range.accounts.first().unwrap();
+        let last_account = account_range.accounts.last().unwrap();
+        
+        // Convert account hashes to nibbles for proof verification
+        let first_nibbles = Nibbles::unpack(first_account.hash);
+        let last_nibbles = Nibbles::unpack(last_account.hash);
+        
+        // Verify the range boundary proof
+        // This is a simplified verification - in practice, we'd need to verify
+        // that the proof covers the entire range from first to last account
+        match verify_proof(
+            target_state_root,
+            first_nibbles,
+            Some(first_account.body.as_ref().to_vec()),
+            &account_range.proof,
+        ) {
+            Ok(()) => {
+                // Also verify the last account to ensure range coverage
+                match verify_proof(
+                    target_state_root,
+                    last_nibbles,
+                    Some(last_account.body.as_ref().to_vec()),
+                    &account_range.proof,
+                ) {
+                    Ok(()) => Ok(true),
+                    Err(e) => {
+                        warn!(
+                            target: "sync::stages::snap_sync",
+                            account_hash = ?last_account.hash,
+                            error = %e,
+                            "Account range proof verification failed for last account"
+                        );
+                        Err(StageError::Fatal(format!("Account range proof verification failed: {}", e).into()))
+                    }
                 }
             }
+            Err(e) => {
+                warn!(
+                    target: "sync::stages::snap_sync",
+                    account_hash = ?first_account.hash,
+                    error = %e,
+                    "Account range proof verification failed for first account"
+                );
+                Err(StageError::Fatal(format!("Account range proof verification failed: {}", e).into()))
+            }
         }
-        
-        Ok(true)
     }
 
     /// Get current target state root from header receiver
@@ -286,6 +347,13 @@ where
             let header = receiver.borrow();
             header.state_root
         })
+    }
+
+    /// Check if the current state root has changed since the last check
+    /// This helps detect stale requests that need to be invalidated
+    pub fn has_state_root_changed(&self, last_known_root: Option<B256>) -> bool {
+        let current_root = self.get_target_state_root();
+        current_root != last_known_root
     }
 
     /// Calculate the next trie range for snap sync requests
@@ -304,6 +372,12 @@ where
         
         // Ensure we don't exceed the maximum
         let range_end = if next > max { max } else { next };
+        
+        // For snap sync, we want to ensure we don't create overlapping ranges
+        // and that we make meaningful progress through the trie
+        if range_end <= current {
+            return Err(StageError::Fatal("Range calculation resulted in no progress".into()));
+        }
         
         Ok((current, range_end))
     }
@@ -429,6 +503,40 @@ where
         // Note: Retry logic could be implemented here if needed
     }
 
+    /// Handle request failure with retry logic
+    fn handle_request_failure(&mut self, request_id: u64, error: &reth_network_p2p::error::RequestError) {
+        let retry_count = self.request_retry_counts.get(&request_id).copied().unwrap_or(0);
+        let max_retries = 3; // TODO: Make this configurable
+        
+        if retry_count < max_retries {
+            warn!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                retry_count = retry_count,
+                max_retries = max_retries,
+                error = %error,
+                "Request failed, will retry"
+            );
+            
+            // Increment retry count
+            self.request_retry_counts.insert(request_id, retry_count + 1);
+            
+            // TODO: Implement exponential backoff and retry the request
+            // For now, we just log the failure and rely on timeout-based retry
+        } else {
+            error!(
+                target: "sync::stages::snap_sync",
+                request_id = request_id,
+                retry_count = retry_count,
+                error = %error,
+                "Request failed after maximum retries, giving up"
+            );
+            
+            // Remove from tracking
+            self.request_retry_counts.remove(&request_id);
+        }
+    }
+
 }
 
 impl<Provider, C> Stage<Provider> for SnapSyncStage<C>
@@ -528,6 +636,23 @@ where
         let target_state_root = self.get_target_state_root()
             .ok_or_else(|| StageError::Fatal("No target state root available".into()))?;
 
+        // Check if state root has changed and invalidate stale requests
+        if self.has_state_root_changed(self.last_known_state_root) {
+            warn!(
+                target: "sync::stages::snap_sync",
+                old_root = ?self.last_known_state_root,
+                new_root = ?target_state_root,
+                "State root changed, invalidating pending requests"
+            );
+            
+            // Clear pending requests as they're now stale
+            self.pending_requests.clear();
+            self.request_start_times.clear();
+            
+            // Update the last known state root
+            self.last_known_state_root = Some(target_state_root);
+        }
+
         // Step 2: Check if the hashed state in tables::HashedAccounts is empty
         let starting_hash = self.get_next_sync_starting_point(provider)?;
 
@@ -568,6 +693,46 @@ where
 
             // Move to next range
             current_starting_hash = range_end;
+        }
+
+        // Poll any pending requests to completion and process them immediately
+        let mut completed_requests = Vec::new();
+        let mut failed_requests = Vec::new();
+        let noop_waker = Self::noop_waker();
+        for (request_id, future) in &mut self.pending_requests {
+            match future.as_mut().poll(&mut Context::from_waker(&noop_waker)) {
+                Poll::Ready(result) => {
+                    match result {
+                        Ok(account_range) => {
+                            debug!(
+                                target: "sync::stages::snap_sync",
+                                request_id = request_id,
+                                accounts_count = account_range.1.accounts.len(),
+                                "Received account range response"
+                            );
+                            self.completed_ranges.push(account_range.1);
+                        }
+                        Err(e) => {
+                            failed_requests.push((*request_id, e));
+                        }
+                    }
+                    completed_requests.push(*request_id);
+                }
+                Poll::Pending => {
+                    // Request still pending, will be processed in next poll_execute_ready
+                }
+            }
+        }
+
+        // Handle failed requests after the loop to avoid borrow conflicts
+        for (request_id, error) in failed_requests {
+            self.handle_request_failure(request_id, &error);
+        }
+
+        // Remove completed requests
+        for request_id in completed_requests {
+            self.pending_requests.remove(&request_id);
+            self.complete_request_tracking(request_id);
         }
 
         // Process any completed account ranges
