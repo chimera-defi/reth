@@ -277,6 +277,8 @@ pub struct SnapSyncConfig {
     /// Range size for account hash ranges (in hash space units).
     /// Larger values = fewer requests but more data per request.
     pub range_size: u64,
+    /// Maximum number of retries for failed requests.
+    pub max_retries: u32,
 }
 
 impl Default for SnapSyncConfig {
@@ -287,6 +289,7 @@ impl Default for SnapSyncConfig {
             max_response_bytes: 2 * 1024 * 1024, // 2MB
             request_timeout_seconds: 30,
             range_size: 0x10, // 16 hash values (very small default for testing)
+            max_retries: 3, // 3 retries by default
         }
     }
 }

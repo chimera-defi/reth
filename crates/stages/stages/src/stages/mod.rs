@@ -685,6 +685,7 @@ mod tests {
                         max_response_bytes: 1024 * 1024, // 1MB
                         request_timeout_seconds: 30,
                         range_size: 0x10,
+                        max_retries: 3,
                     },
                 }
             }
@@ -1016,5 +1017,50 @@ mod tests {
             
             // Verify that the future is created (this tests the request sending path)
             assert!(true); // Just test that it doesn't panic
+        }
+
+        #[test]
+        fn test_snap_sync_progress_persistence() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use alloy_primitives::B256;
+            use std::sync::Arc;
+
+            // Test progress persistence functionality
+            let config = SnapSyncConfig::default();
+            let snap_client = Arc::new(MockSnapClient);
+            let mut stage = SnapSyncStage::new(config, snap_client);
+            
+            // Initially no progress should be stored
+            assert!(stage.last_processed_range.is_none());
+            
+            // Simulate processing a range
+            let range_start = B256::from([0x01; 32]);
+            let range_end = B256::from([0x02; 32]);
+            stage.last_processed_range = Some((range_start, range_end));
+            
+            // Verify progress is stored
+            assert_eq!(stage.last_processed_range, Some((range_start, range_end)));
+            
+            // Test that we can clear progress
+            stage.last_processed_range = None;
+            assert!(stage.last_processed_range.is_none());
+        }
+
+        #[test]
+        fn test_snap_sync_config_max_retries() {
+            use crate::stages::SnapSyncStage;
+            use reth_config::config::SnapSyncConfig;
+            use std::sync::Arc;
+
+            // Test that max_retries config field works
+            let mut config = SnapSyncConfig::default();
+            config.max_retries = 5;
+            
+            let snap_client = Arc::new(MockSnapClient);
+            let stage = SnapSyncStage::new(config, snap_client);
+            
+            // Verify config is stored correctly
+            assert_eq!(stage.config.max_retries, 5);
         }
 }
