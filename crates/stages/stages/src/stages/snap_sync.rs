@@ -30,6 +30,9 @@ use std::{
 use tokio::sync::watch;
 use tracing::*;
 
+mod header_subscription;
+use header_subscription::HeaderSubscriptionService;
+
 /// Snap sync stage for downloading trie data ranges from peers.
 /// Replaces `SenderRecoveryStage`, `ExecutionStage` and `PruneSenderRecoveryStage` when enabled.
 pub struct SnapSyncStage<C: SnapClient> {
@@ -81,7 +84,7 @@ where
         use std::task::{RawWaker, RawWakerVTable};
         
         unsafe fn noop_clone(_data: *const ()) -> RawWaker {
-            noop_raw_waker()
+            unsafe { noop_raw_waker() }
         }
         
         unsafe fn noop(_data: *const ()) {}
@@ -123,6 +126,38 @@ where
     pub fn with_header_receiver(mut self, receiver: watch::Receiver<SealedHeader>) -> Self {
         self.header_receiver = Some(receiver);
         self
+    }
+
+    /// Create a new `SnapSyncStage` with header subscription from consensus engine events
+    pub fn with_header_subscription<N>(
+        config: SnapSyncConfig,
+        snap_client: Arc<C>,
+        event_sender: tokio::sync::broadcast::Sender<reth_engine_primitives::ConsensusEngineEvent<N>>,
+    ) -> (Self, watch::Receiver<SealedHeader>)
+    where
+        N: reth_primitives_traits::NodePrimitives<BlockHeader = alloy_consensus::Header>,
+    {
+        let (header_subscription_service, header_receiver) = HeaderSubscriptionService::<N>::new(event_sender);
+        
+        // Start the header subscription service in the background
+        tokio::spawn(async move {
+            header_subscription_service.start().await;
+        });
+        
+        let stage = Self {
+            config,
+            snap_client,
+            header_receiver: Some(header_receiver.clone()),
+            request_id_counter: 0,
+            pending_requests: HashMap::new(),
+            request_start_times: HashMap::new(),
+            request_retry_counts: HashMap::new(),
+            completed_ranges: Vec::new(),
+            last_known_state_root: None,
+            last_processed_range: None,
+        };
+        
+        (stage, header_receiver)
     }
 
     /// Check if hashed state is empty

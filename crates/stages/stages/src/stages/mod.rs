@@ -21,6 +21,9 @@ mod prune;
 mod sender_recovery;
 /// The snap sync stage.
 mod snap_sync;
+/// Integration tests for snap sync with header subscription.
+#[cfg(test)]
+mod snap_sync_integration_test;
 /// The transaction lookup stage
 mod tx_lookup;
 

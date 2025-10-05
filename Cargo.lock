@@ -10327,6 +10327,7 @@ dependencies = [
  "reth-db",
  "reth-db-api",
  "reth-downloaders",
+ "reth-engine-primitives",
  "reth-era",
  "reth-era-downloader",
  "reth-era-utils",
