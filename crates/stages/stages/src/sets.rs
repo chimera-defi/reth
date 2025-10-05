@@ -50,6 +50,7 @@ use reth_config::config::StageConfig;
 use reth_consensus::{ConsensusError, FullConsensus};
 use reth_evm::ConfigureEvm;
 use reth_network_p2p::{bodies::downloader::BodyDownloader, headers::downloader::HeaderDownloader, snap::client::SnapClient};
+use reth_provider::BlockNumReader;
 use reth_primitives_traits::{Block, NodePrimitives};
 use reth_provider::HeaderSyncGapProvider;
 use reth_prune_types::PruneModes;
@@ -409,7 +410,7 @@ impl<E, S, Provider> StageSet<Provider> for ExecutionStages<E, S>
 where
     E: ConfigureEvm + 'static,
     S: reth_network_p2p::snap::client::SnapClient + Send + Sync + 'static,
-    Provider: reth_provider::DBProvider + reth_provider::StatsReader + reth_provider::HeaderProvider,
+    Provider: reth_provider::DBProvider + reth_provider::StatsReader + reth_provider::HeaderProvider + reth_provider::BlockNumReader,
     SenderRecoveryStage: Stage<Provider>,
     ExecutionStage<E>: Stage<Provider>,
     crate::stages::SnapSyncStage<S>: Stage<Provider>,

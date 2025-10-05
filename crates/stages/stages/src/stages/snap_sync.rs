@@ -10,9 +10,9 @@ use reth_db_api::{
 use reth_eth_wire_types::snap::{AccountRangeMessage, GetAccountRangeMessage};
 use reth_network_p2p::{snap::client::SnapClient, priority::Priority};
 use reth_provider::{
-    DBProvider,
+    BlockNumReader, DBProvider, HeaderProvider,
 };
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{BlockHeader, SealedHeader};
 use alloy_trie::TrieAccount;
 use alloy_rlp::Decodable;
 use reth_stages_api::{
@@ -224,14 +224,14 @@ where
         account_ranges: Vec<AccountRangeMessage>,
     ) -> Result<usize, StageError>
     where
-        Provider: DBProvider<Tx: DbTxMut>,
+        Provider: DBProvider<Tx: DbTxMut> + HeaderProvider + BlockNumReader,
     {
         let start_time = std::time::Instant::now();
         let mut processed = 0;
 
         for account_range in account_ranges {
             // Verify proof before processing
-            if !self.verify_account_range_proof(&account_range)? {
+            if !self.verify_account_range_proof(provider, &account_range)? {
                 return Err(StageError::Fatal("Account range proof verification failed".into()));
             }
 
@@ -283,7 +283,14 @@ where
 
     /// Verify account range proof using Merkle proof verification
     /// Snap protocol proofs are for range boundaries, not individual accounts
-    fn verify_account_range_proof(&self, account_range: &AccountRangeMessage) -> Result<bool, StageError> {
+    fn verify_account_range_proof<Provider>(
+        &self, 
+        provider: &Provider, 
+        account_range: &AccountRangeMessage
+    ) -> Result<bool, StageError>
+    where
+        Provider: HeaderProvider + BlockNumReader,
+    {
         use alloy_trie::proof::verify_proof;
         use reth_trie_common::Nibbles;
         
@@ -298,7 +305,7 @@ where
         }
         
         // Get target state root for verification
-        let target_state_root = self.get_target_state_root()
+        let target_state_root = self.get_target_state_root_from_provider(provider)?
             .ok_or_else(|| StageError::Fatal("No target state root available for proof verification".into()))?;
         
         // For snap protocol, we need to verify the range boundary proof
@@ -357,6 +364,30 @@ where
             let header = receiver.borrow();
             header.state_root
         })
+    }
+    
+    /// Get target state root from provider's latest header
+    /// This is a fallback when header receiver is not available
+    pub fn get_target_state_root_from_provider<Provider>(
+        &self,
+        provider: &Provider,
+    ) -> Result<Option<B256>, StageError>
+    where
+        Provider: HeaderProvider + BlockNumReader,
+    {
+        // First try to get from header receiver if available
+        if let Some(state_root) = self.get_target_state_root() {
+            return Ok(Some(state_root));
+        }
+        
+        // Fallback to getting the latest header from provider
+        let latest_block_number = provider.best_block_number()
+            .map_err(|e| StageError::Fatal(format!("Failed to get best block number: {}", e).into()))?;
+        
+        let header = provider.header_by_number(latest_block_number)
+            .map_err(|e| StageError::Fatal(format!("Failed to get header for block {}: {}", latest_block_number, e).into()))?;
+        
+        Ok(header.map(|h| h.state_root()))
     }
 
     /// Check if the current state root has changed since the last check
@@ -561,7 +592,7 @@ where
 
 impl<Provider, C> Stage<Provider> for SnapSyncStage<C>
 where
-    Provider: DBProvider<Tx: DbTxMut>,
+    Provider: DBProvider<Tx: DbTxMut> + HeaderProvider + BlockNumReader,
     C: SnapClient + Send + Sync + 'static,
 {
     fn id(&self) -> StageId {
@@ -577,8 +608,9 @@ where
             return Poll::Ready(Ok(()));
         }
 
-        // Check if we have a target state root from consensus engine
-        if self.get_target_state_root().is_none() {
+        // If we have a header receiver, check if we have a target state root from consensus engine
+        // Otherwise, we'll get it from the provider in execute()
+        if self.header_receiver.is_some() && self.get_target_state_root().is_none() {
             return Poll::Pending;
         }
 
@@ -652,8 +684,8 @@ where
             });
         }
 
-        // Step 1: Retrieve the latest header from the engine
-        let target_state_root = self.get_target_state_root()
+        // Step 1: Retrieve the latest header from the engine or provider
+        let target_state_root = self.get_target_state_root_from_provider(provider)?
             .ok_or_else(|| StageError::Fatal("No target state root available".into()))?;
 
         // Check if state root has changed and invalidate stale requests
