@@ -359,6 +359,9 @@ pub struct ExecutionStages<E: ConfigureEvm, S = ()> {
     /// Optional snap client for snap sync (when enabled)
     /// `SnapSyncStage` is integrated into the pipeline when snap sync is enabled
     snap_client: Option<Arc<S>>,
+    /// Optional header receiver for consensus engine updates
+    /// Used by SnapSyncStage to get target state root updates
+    header_receiver: Option<watch::Receiver<reth_primitives_traits::SealedHeader>>,
 }
 
 impl<E: ConfigureEvm> ExecutionStages<E> {
@@ -373,6 +376,7 @@ impl<E: ConfigureEvm> ExecutionStages<E> {
             consensus, 
             stages_config,
             snap_client: None,
+            header_receiver: None,
         }
     }
 }
@@ -390,7 +394,14 @@ impl<E: ConfigureEvm, S: SnapClient + Send + Sync + 'static> ExecutionStages<E, 
             consensus, 
             stages_config,
             snap_client,
+            header_receiver: None,
         }
+    }
+    
+    /// Set the header receiver for consensus engine updates.
+    pub fn with_header_receiver(mut self, receiver: watch::Receiver<reth_primitives_traits::SealedHeader>) -> Self {
+        self.header_receiver = Some(receiver);
+        self
     }
 }
 
@@ -410,10 +421,18 @@ where
         if self.stages_config.snap_sync.enabled {
             // Use snap sync stage when enabled - REPLACES SenderRecoveryStage, ExecutionStage, PruneSenderRecoveryStage
             if let Some(snap_client) = self.snap_client {
-                builder = builder.add_stage(crate::stages::SnapSyncStage::new(
+                let mut snap_sync_stage = crate::stages::SnapSyncStage::new(
                     self.stages_config.snap_sync,
                     snap_client,
-                ));
+                );
+                
+                // Set the header receiver if available to subscribe to consensus engine updates
+                // This allows the snap sync stage to get the latest state root from the head header
+                if let Some(receiver) = self.header_receiver {
+                    snap_sync_stage = snap_sync_stage.with_header_receiver(receiver);
+                }
+                
+                builder = builder.add_stage(snap_sync_stage);
             } else {
                 // Fall back to traditional stages if snap client not provided
                 builder = builder
