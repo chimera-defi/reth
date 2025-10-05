@@ -55,7 +55,7 @@ use reth_provider::HeaderSyncGapProvider;
 use reth_prune_types::PruneModes;
 use reth_stages_api::Stage;
 use std::{ops::Not, sync::Arc};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 
 /// A set containing all stages to run a fully syncing instance of reth.
@@ -359,6 +359,9 @@ pub struct ExecutionStages<E: ConfigureEvm, S = ()> {
     /// Optional snap client for snap sync (when enabled)
     /// `SnapSyncStage` is integrated into the pipeline when snap sync is enabled
     snap_client: Option<Arc<S>>,
+    /// Optional consensus engine event sender for header subscription
+    /// Used by snap sync stage to receive head header updates
+    consensus_engine_events: Option<broadcast::Sender<reth_engine_primitives::ConsensusEngineEvent<E::Primitives>>>,
 }
 
 impl<E: ConfigureEvm> ExecutionStages<E> {
@@ -373,6 +376,7 @@ impl<E: ConfigureEvm> ExecutionStages<E> {
             consensus, 
             stages_config,
             snap_client: None,
+            consensus_engine_events: None,
         }
     }
 }
@@ -390,6 +394,24 @@ impl<E: ConfigureEvm, S: SnapClient + Send + Sync + 'static> ExecutionStages<E, 
             consensus, 
             stages_config,
             snap_client,
+            consensus_engine_events: None,
+        }
+    }
+
+    /// Create a new set of execution stages with snap client and consensus engine events.
+    pub fn with_snap_client_and_consensus_events(
+        executor_provider: E,
+        consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
+        stages_config: StageConfig,
+        snap_client: Option<Arc<S>>,
+        consensus_engine_events: Option<broadcast::Sender<reth_engine_primitives::ConsensusEngineEvent<E::Primitives>>>,
+    ) -> Self {
+        Self { 
+            evm_config: executor_provider, 
+            consensus, 
+            stages_config,
+            snap_client,
+            consensus_engine_events,
         }
     }
 }
@@ -410,10 +432,21 @@ where
         if self.stages_config.snap_sync.enabled {
             // Use snap sync stage when enabled - REPLACES SenderRecoveryStage, ExecutionStage, PruneSenderRecoveryStage
             if let Some(snap_client) = self.snap_client {
-                builder = builder.add_stage(crate::stages::SnapSyncStage::new(
-                    self.stages_config.snap_sync,
-                    snap_client,
-                ));
+                // Use header subscription if consensus engine events are available
+                if let Some(consensus_events) = self.consensus_engine_events {
+                    let (snap_sync_stage, _header_receiver) = crate::stages::SnapSyncStage::with_header_subscription(
+                        self.stages_config.snap_sync,
+                        snap_client,
+                        consensus_events,
+                    );
+                    builder = builder.add_stage(snap_sync_stage);
+                } else {
+                    // Fall back to basic snap sync without header subscription
+                    builder = builder.add_stage(crate::stages::SnapSyncStage::new(
+                        self.stages_config.snap_sync,
+                        snap_client,
+                    ));
+                }
             } else {
                 // Fall back to traditional stages if snap client not provided
                 builder = builder
